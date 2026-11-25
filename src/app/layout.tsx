@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
-import { DM_Sans, JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google";
+import { DM_Sans, JetBrains_Mono, Playfair_Display } from "next/font/google";
 import "./globals.css";
 
-const plusJakarta = Plus_Jakarta_Sans({
+const playfairDisplay = Playfair_Display({
   subsets: ["latin"],
   weight: ["500", "600", "700"],
-  variable: "--font-plus-jakarta",
+  variable: "--font-playfair",
   display: "swap",
 });
 
 const dmSans = DM_Sans({
   subsets: ["latin"],
-  weight: ["400", "500", "600"],
+  weight: ["400", "500", "600", "700"],
   variable: "--font-dm-sans",
   display: "swap",
 });
@@ -24,13 +24,13 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Akvai Associates — Hello World",
+  title: "Akvai Associates — Architectural Practice",
   description:
-    "Hello World starter built with Next.js App Router, Tailwind CSS v4, and TypeScript, configured for zero-config Vercel deployment.",
+    "Thoughtful architecture from the first sketch to the final detail. Residential and commercial architecture, interior design, space planning, and 3D visualization.",
   openGraph: {
-    title: "Akvai Associates — Hello World",
+    title: "Akvai Associates — Architectural Practice",
     description:
-      "Hello World starter built with Next.js App Router, Tailwind CSS v4, and TypeScript, configured for zero-config Vercel deployment.",
+      "Spaces shaped for the way you live. Architecture, interior design, planning, and 3D visualization by Akvai Associates.",
     type: "website",
   },
 };
@@ -43,10 +43,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${plusJakarta.variable} ${dmSans.variable} ${jetbrainsMono.variable}`}
-      suppressHydrationWarning
+      className={`${playfairDisplay.variable} ${dmSans.variable} ${jetbrainsMono.variable}`}
     >
-      <body className="min-h-screen bg-neutral-50 text-neutral-900 antialiased selection:bg-blue-700 selection:text-white dark:bg-neutral-950 dark:text-neutral-100">
+      <body className="min-h-screen bg-[#F4F1EA] text-[#1C1B19] antialiased selection:bg-[#0D5C43] selection:text-white">
         {children}
       </body>
     </html>
