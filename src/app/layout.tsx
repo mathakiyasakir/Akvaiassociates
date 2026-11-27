@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DM_Sans, JetBrains_Mono, Playfair_Display } from "next/font/google";
+import { AppProvider } from "@/components/AppContext";
 import "./globals.css";
 
 const playfairDisplay = Playfair_Display({
@@ -46,7 +47,7 @@ export default function RootLayout({
       className={`${playfairDisplay.variable} ${dmSans.variable} ${jetbrainsMono.variable}`}
     >
       <body className="min-h-screen bg-[#F4F1EA] text-[#1C1B19] antialiased selection:bg-[#0D5C43] selection:text-white">
-        {children}
+        <AppProvider>{children}</AppProvider>
       </body>
     </html>
   );

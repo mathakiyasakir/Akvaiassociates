@@ -1,0 +1,203 @@
+"use client";
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
+import { useRouter } from "next/navigation";
+import { DEFAULT_SITE_CONFIG } from "@/lib/default-data";
+import type { OrderItem, PublicUser, SiteConfig } from "@/lib/types";
+
+export type AppTab = "home" | "service" | "orders" | "profile";
+
+interface AppContextValue {
+  user: PublicUser | null;
+  token: string | null;
+  authReady: boolean;
+  activeTab: AppTab;
+  setActiveTab: (tab: AppTab) => void;
+  siteConfig: SiteConfig;
+  orders: OrderItem[];
+  loadingData: boolean;
+  authFetch: (input: string, init?: RequestInit) => Promise<Response>;
+  setSession: (user: PublicUser, token: string) => void;
+  logout: () => void;
+  requireLoginOrRun: (action: () => void, afterLoginTab?: AppTab) => boolean;
+  refreshSiteConfig: () => Promise<void>;
+  refreshOrders: () => Promise<void>;
+  setSiteConfigLocal: (config: SiteConfig) => void;
+}
+
+const AppContext = createContext<AppContextValue | null>(null);
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const [user, setUser] = useState<PublicUser | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [activeTab, setActiveTab] = useState<AppTab>("home");
+  const [pendingTab, setPendingTab] = useState<AppTab | null>(null);
+  const [siteConfig, setSiteConfig] = useState<SiteConfig>(DEFAULT_SITE_CONFIG);
+  const [orders, setOrders] = useState<OrderItem[]>([]);
+  const [loadingData, setLoadingData] = useState(false);
+
+  const loadPublicSiteConfig = useCallback(async () => {
+    try {
+      const res = await fetch("/api/site-config", { cache: "no-store" });
+      if (res.ok) {
+        const data = (await res.json()) as { config?: SiteConfig };
+        if (data.config) setSiteConfig(data.config);
+      }
+    } catch {
+      // Keep default site config on transient error
+    }
+  }, []);
+
+  const checkAuthStatus = useCallback(async (currentToken: string | null) => {
+    try {
+      const headers: HeadersInit = currentToken
+        ? { Authorization: `Bearer ${currentToken}` }
+        : {};
+      const res = await fetch("/api/auth/status", { headers, cache: "no-store" });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          authenticated?: boolean;
+          user?: PublicUser | null;
+        };
+        if (data.authenticated && data.user) {
+          setUser(data.user);
+        } else if (currentToken) {
+          setUser(null);
+          setToken(null);
+        }
+      }
+    } catch {
+      // Keep state on transient network failure
+    } finally {
+      setAuthReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void Promise.all([loadPublicSiteConfig(), checkAuthStatus(null)]);
+  }, [loadPublicSiteConfig, checkAuthStatus]);
+
+  const logout = useCallback(() => {
+    setUser(null);
+    setToken(null);
+    setOrders([]);
+    setPendingTab(null);
+    setActiveTab("home");
+    void checkAuthStatus(null);
+  }, [checkAuthStatus]);
+
+  const authFetch = useCallback(
+    async (input: string, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers);
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+      if (init.body && !headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
+      const res = await fetch(input, { ...init, headers, cache: "no-store" });
+      if (res.status === 401) {
+        logout();
+      }
+      return res;
+    },
+    [token, logout]
+  );
+
+  const refreshOrders = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await authFetch("/api/orders");
+      if (res.ok) {
+        const data = (await res.json()) as { orders?: OrderItem[] };
+        if (Array.isArray(data.orders)) setOrders(data.orders);
+      }
+    } catch {
+      // Keep existing orders
+    }
+  }, [token, authFetch]);
+
+  useEffect(() => {
+    if (!token || !user) return;
+    let cancelled = false;
+    const loadAuthedData = async () => {
+      setLoadingData(true);
+      await Promise.all([loadPublicSiteConfig(), refreshOrders()]);
+      if (!cancelled) setLoadingData(false);
+    };
+    void loadAuthedData();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, user, loadPublicSiteConfig, refreshOrders]);
+
+  const setSession = useCallback(
+    (nextUser: PublicUser, nextToken: string) => {
+      setUser(nextUser);
+      setToken(nextToken);
+      if (pendingTab) {
+        setActiveTab(pendingTab);
+        setPendingTab(null);
+      } else {
+        setActiveTab("home");
+      }
+    },
+    [pendingTab]
+  );
+
+  const requireLoginOrRun = useCallback(
+    (action: () => void, afterLoginTab?: AppTab): boolean => {
+      if (!user) {
+        if (afterLoginTab) {
+          setPendingTab(afterLoginTab);
+        }
+        router.push("/login");
+        return false;
+      }
+      action();
+      return true;
+    },
+    [user, router]
+  );
+
+  return (
+    <AppContext.Provider
+      value={{
+        user,
+        token,
+        authReady,
+        activeTab,
+        setActiveTab,
+        siteConfig,
+        orders,
+        loadingData,
+        authFetch,
+        setSession,
+        logout,
+        requireLoginOrRun,
+        refreshSiteConfig: loadPublicSiteConfig,
+        refreshOrders,
+        setSiteConfigLocal: setSiteConfig,
+      }}
+    >
+      {children}
+    </AppContext.Provider>
+  );
+}
+
+export function useApp() {
+  const ctx = useContext(AppContext);
+  if (!ctx) {
+    throw new Error("useApp must be used inside AppProvider");
+  }
+  return ctx;
+}
