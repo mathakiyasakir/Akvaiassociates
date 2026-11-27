@@ -39,6 +39,7 @@ export function HiddenAdminPortal({
   const router = useRouter();
   const { user, setSession, logout } = useApp();
 
+  const [activePortalKey, setActivePortalKey] = useState(portalKey);
   const [mode, setMode] = useState<"setup" | "portal">(initialMode);
   const [customSlug, setCustomSlug] = useState("");
   const [name, setName] = useState("Akvai Owner");
@@ -55,13 +56,21 @@ export function HiddenAdminPortal({
     setError(null);
     setSubmitting(true);
 
+    const normalizedSlug = customSlug
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]/g, "")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
     try {
       const res = await fetch("/api/auth/setup-admin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          portalKey,
-          customSlug: customSlug.trim().toLowerCase(),
+          portalKey: activePortalKey,
+          customSlug: normalizedSlug,
           name: name.trim(),
           email: email.trim(),
           password,
@@ -70,6 +79,7 @@ export function HiddenAdminPortal({
       const data = (await res.json()) as {
         user?: PublicUser;
         token?: string;
+        portalSlug?: string;
         portalPath?: string;
         error?: string;
       };
@@ -78,10 +88,13 @@ export function HiddenAdminPortal({
         return;
       }
 
+      if (data.portalSlug) {
+        setActivePortalKey(data.portalSlug);
+      }
       setSession(data.user, data.token);
       setMode("portal");
-      if (data.portalPath && data.portalPath !== `/portal/${portalKey}`) {
-        router.replace(data.portalPath);
+      if (data.portalPath && typeof window !== "undefined") {
+        window.history.replaceState(null, "", data.portalPath);
       }
     } catch {
       setError("Network error while setting up the owner portal.");
@@ -100,7 +113,7 @@ export function HiddenAdminPortal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          portalKey,
+          portalKey: activePortalKey,
           email: email.trim(),
           password,
         }),
@@ -167,7 +180,7 @@ export function HiddenAdminPortal({
           </div>
         </header>
 
-        <AdminPanel portalKey={portalKey} />
+        <AdminPanel portalKey={activePortalKey} />
       </div>
     );
   }
@@ -233,20 +246,28 @@ export function HiddenAdminPortal({
                         id="owner-slug"
                         type="text"
                         required
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        autoComplete="off"
+                        spellCheck={false}
                         value={customSlug}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          setError(null);
                           setCustomSlug(
-                            e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "")
-                          )
-                        }
-                        placeholder="e.g. akvai-vault-9042"
+                            e.target.value
+                              .toLowerCase()
+                              .replace(/\s+/g, "-")
+                              .replace(/[^a-z0-9-]/g, "")
+                          );
+                        }}
+                        placeholder="e.g. starplaza-f75"
                         className="w-full rounded-[3px] border border-[#3B3B36] bg-[#141412] py-2.5 pr-4 pl-10 font-mono text-sm text-white placeholder:text-[#6E6C66] focus:border-[#E07A22] focus:outline-none"
                       />
                     </div>
                     <p className="mt-1.5 font-mono text-[11px] text-[#9E9C95]">
                       Secret URL:{" "}
                       <span className="text-[#E08A3C]">
-                        /portal/{customSlug || "your-secret-slug"}
+                        /portal/{customSlug.replace(/^-+|-+$/g, "") || "your-secret-slug"}
                       </span>
                     </p>
                   </div>
@@ -305,10 +326,13 @@ export function HiddenAdminPortal({
                       id="owner-pass"
                       type={showPassword ? "text" : "password"}
                       required
-                      minLength={6}
+                      minLength={8}
                       value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Minimum 6 characters"
+                      onChange={(e) => {
+                        setError(null);
+                        setPassword(e.target.value);
+                      }}
+                      placeholder="Min 8 chars (letters + numbers)"
                       className="w-full rounded-[3px] border border-[#3B3B36] bg-[#141412] py-2.5 pr-11 pl-10 text-sm text-white placeholder:text-[#6E6C66] focus:border-[#E07A22] focus:outline-none"
                     />
                     <button

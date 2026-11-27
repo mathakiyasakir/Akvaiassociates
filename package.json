@@ -9,10 +9,12 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@types/nodemailer": "^8.0.2",
     "lucide-react": "^1.80.0",
     "mongodb": "^7.9.1",
     "motion": "^14.14.0",
     "next": "^15.3.3",
+    "nodemailer": "^10.6.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

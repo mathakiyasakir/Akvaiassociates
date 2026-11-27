@@ -17,6 +17,7 @@ export type AppTab = "home" | "service" | "orders" | "profile";
 interface AppContextValue {
   user: PublicUser | null;
   token: string | null;
+  loginIntentToken: string | null;
   authReady: boolean;
   activeTab: AppTab;
   setActiveTab: (tab: AppTab) => void;
@@ -25,6 +26,7 @@ interface AppContextValue {
   loadingData: boolean;
   authFetch: (input: string, init?: RequestInit) => Promise<Response>;
   setSession: (user: PublicUser, token: string) => void;
+  clearLoginIntent: () => void;
   logout: () => void;
   requireLoginOrRun: (action: () => void, afterLoginTab?: AppTab) => boolean;
   refreshSiteConfig: () => Promise<void>;
@@ -34,16 +36,46 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+const BLOCKED_AUTH_HASHES = new Set([
+  "#login",
+  "#signin",
+  "#sign-in",
+  "#signup",
+  "#sign-up",
+  "#register",
+  "#auth",
+  "#admin",
+  "#portal",
+]);
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [user, setUser] = useState<PublicUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [loginIntentToken, setLoginIntentToken] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [activeTab, setActiveTab] = useState<AppTab>("home");
   const [pendingTab, setPendingTab] = useState<AppTab | null>(null);
   const [siteConfig, setSiteConfig] = useState<SiteConfig>(DEFAULT_SITE_CONFIG);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [loadingData, setLoadingData] = useState(false);
+
+  // Strip direct #login / #admin / #auth URL hash tampering without opening login
+  useEffect(() => {
+    const scrubBlockedHash = () => {
+      const currentHash = window.location.hash.trim().toLowerCase();
+      if (BLOCKED_AUTH_HASHES.has(currentHash)) {
+        window.history.replaceState(
+          null,
+          "",
+          window.location.pathname + window.location.search
+        );
+      }
+    };
+    scrubBlockedHash();
+    window.addEventListener("hashchange", scrubBlockedHash);
+    return () => window.removeEventListener("hashchange", scrubBlockedHash);
+  }, []);
 
   const loadPublicSiteConfig = useCallback(async () => {
     try {
@@ -86,9 +118,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void Promise.all([loadPublicSiteConfig(), checkAuthStatus(null)]);
   }, [loadPublicSiteConfig, checkAuthStatus]);
 
+  const clearLoginIntent = useCallback(() => {
+    setLoginIntentToken(null);
+  }, []);
+
   const logout = useCallback(() => {
     setUser(null);
     setToken(null);
+    setLoginIntentToken(null);
     setOrders([]);
     setPendingTab(null);
     setActiveTab("home");
@@ -144,6 +181,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (nextUser: PublicUser, nextToken: string) => {
       setUser(nextUser);
       setToken(nextToken);
+      setLoginIntentToken(null);
       if (pendingTab) {
         setActiveTab(pendingTab);
         setPendingTab(null);
@@ -154,19 +192,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [pendingTab]
   );
 
+  const openGatedLogin = useCallback(
+    async (afterLoginTab?: AppTab) => {
+      if (afterLoginTab) {
+        setPendingTab(afterLoginTab);
+      }
+      try {
+        const res = await fetch("/api/auth/login-intent", {
+          method: "POST",
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { intentToken?: string };
+        if (data.intentToken) {
+          setLoginIntentToken(data.intentToken);
+          router.push("/login");
+        }
+      } catch {
+        // Stay safely on current page if intent cannot be issued
+      }
+    },
+    [router]
+  );
+
   const requireLoginOrRun = useCallback(
     (action: () => void, afterLoginTab?: AppTab): boolean => {
       if (!user) {
-        if (afterLoginTab) {
-          setPendingTab(afterLoginTab);
-        }
-        router.push("/login");
+        void openGatedLogin(afterLoginTab);
         return false;
       }
       action();
       return true;
     },
-    [user, router]
+    [user, openGatedLogin]
   );
 
   return (
@@ -174,6 +232,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       value={{
         user,
         token,
+        loginIntentToken,
         authReady,
         activeTab,
         setActiveTab,
@@ -182,6 +241,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         loadingData,
         authFetch,
         setSession,
+        clearLoginIntent,
         logout,
         requireLoginOrRun,
         refreshSiteConfig: loadPublicSiteConfig,

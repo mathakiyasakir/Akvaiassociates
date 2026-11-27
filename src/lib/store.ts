@@ -77,12 +77,19 @@ export function validateCustomSlug(slug: string): {
   if (typeof slug !== "string") {
     return { valid: false, error: "Secret URL slug must be a string." };
   }
-  const normalized = slug.trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9-]{4,62}[a-z0-9]$/.test(normalized)) {
+  const normalized = slug
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  if (normalized.length < 4 || normalized.length > 64 || !/^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$/.test(normalized)) {
     return {
       valid: false,
       error:
-        "Secret URL slug must be 6–64 characters using lowercase letters, numbers, and hyphens only.",
+        "Secret URL slug must be 4–64 characters using lowercase letters, numbers, and hyphens only.",
     };
   }
   if (RESERVED_SLUGS.has(normalized)) {
@@ -202,6 +209,10 @@ async function ensureEnvMongoConnected(): Promise<void> {
     state.mongoLastError =
       error instanceof Error ? error.message : "Failed to connect via MONGODB_URI";
   }
+}
+
+export function isMongoConnected(): boolean {
+  return Boolean(getState().mongoDb);
 }
 
 async function getActiveDb(): Promise<Db | null> {
@@ -439,9 +450,10 @@ export async function verifyPortalSlugAccess(
     return { allowed: false, mode: "denied" };
   }
 
-  // Case 2: No slug configured yet AND first-run setup is still open -> allow one-time /portal/owner-setup
-  if (setupRequired && safeCompare(normalized, ONE_TIME_SETUP_SLUG)) {
-    return { allowed: true, mode: "setup" };
+  // Case 2: No slug configured yet -> allow /portal/owner-setup
+  // (setup mode if no admin exists yet; portal login mode if ADMIN_PASSWORD env is set without ADMIN_SECRET_SLUG)
+  if (safeCompare(normalized, ONE_TIME_SETUP_SLUG)) {
+    return { allowed: true, mode: setupRequired ? "setup" : "portal" };
   }
 
   return { allowed: false, mode: "denied" };
@@ -519,11 +531,12 @@ export async function listPublicUsers(): Promise<PublicUser[]> {
         .toArray()
     : getState().users;
 
-  return list.map(({ id, name, email, role, createdAt }) => ({
+  return list.map(({ id, name, email, role, emailVerified, createdAt }) => ({
     id,
     name,
     email,
     role,
+    emailVerified,
     createdAt,
   }));
 }
@@ -554,6 +567,7 @@ export async function createUser(input: {
   email: string;
   passwordHash: string;
   role: UserRole;
+  emailVerified?: boolean;
 }): Promise<PublicUser> {
   const user: StoredUser = {
     id: `usr_${crypto.randomBytes(8).toString("hex")}`,
@@ -561,6 +575,7 @@ export async function createUser(input: {
     email: input.email.trim().toLowerCase(),
     passwordHash: input.passwordHash,
     role: input.role,
+    emailVerified: Boolean(input.emailVerified),
     createdAt: new Date().toISOString(),
   };
 
@@ -577,6 +592,7 @@ export async function createUser(input: {
     name: user.name,
     email: user.email,
     role: user.role,
+    emailVerified: user.emailVerified,
     createdAt: user.createdAt,
   };
 }

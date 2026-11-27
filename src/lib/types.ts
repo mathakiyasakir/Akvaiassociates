@@ -93,6 +93,7 @@ export interface PublicUser {
   name: string;
   email: string;
   role: UserRole;
+  emailVerified?: boolean;
   createdAt: string;
 }
 
@@ -135,4 +136,15 @@ export interface PortalSecurityStatus {
   portalPath: string;
   slugControlledByEnv: boolean;
   passwordControlledByEnv: boolean;
+}
+
+export interface SmtpStatus {
+  configured: boolean;
+  source: "env" | "runtime" | "none";
+  host: string | null;
+  port: number | null;
+  maskedUser: string | null;
+  fromAddress: string | null;
+  verifiedAt: string | null;
+  lastError: string | null;
 }

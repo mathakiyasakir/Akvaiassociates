@@ -1,24 +1,56 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import { signSessionToken, verifyPassword } from "@/lib/auth";
 import {
-  hashPassword,
-  safeEqualStrings,
-  signSessionToken,
-  verifyPassword,
-} from "@/lib/auth";
-import {
-  createUser,
-  findUserByEmail,
-  getEnvAdminEmail,
-  hasEnvAdminConfigured,
-  updateUserRole,
-} from "@/lib/store";
+  checkRateLimit,
+  getClientIp,
+  hasUnsafeKeys,
+  secureJson,
+  verifyLoginIntentToken,
+  verifySameOrigin,
+} from "@/lib/security";
+import { findUserByEmail } from "@/lib/store";
 
 export async function POST(request: NextRequest) {
+  if (!verifySameOrigin(request)) {
+    return secureJson({ error: "Forbidden request origin." }, { status: 403 });
+  }
+
+  const intentToken = request.headers.get("x-auth-intent");
+  if (!verifyLoginIntentToken(intentToken)) {
+    return secureJson(
+      { error: "Session gate expired. Please start from the website." },
+      { status: 403 }
+    );
+  }
+
+  const ip = getClientIp(request);
+  const ipLimit = checkRateLimit({
+    bucket: "login-ip",
+    key: ip,
+    maxRequests: 15,
+    windowMs: 15 * 60 * 1000,
+  });
+  if (!ipLimit.allowed) {
+    return secureJson(
+      {
+        error: `Too many sign-in attempts. Please try again in ${ipLimit.retryAfterSeconds}s.`,
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(ipLimit.retryAfterSeconds) },
+      }
+    );
+  }
+
   let body: unknown;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+    return secureJson({ error: "Invalid request payload." }, { status: 400 });
+  }
+
+  if (!body || typeof body !== "object" || hasUnsafeKeys(body)) {
+    return secureJson({ error: "Invalid input detected." }, { status: 400 });
   }
 
   const record = body as Record<string, unknown>;
@@ -27,53 +59,41 @@ export async function POST(request: NextRequest) {
   const password = typeof record.password === "string" ? record.password : "";
 
   if (!email || !password) {
-    return NextResponse.json(
+    return secureJson(
       { error: "Email and password are required." },
       { status: 400 }
     );
   }
 
-  // Env ADMIN_PASSWORD override always takes precedence for configured ADMIN_EMAIL
-  if (hasEnvAdminConfigured() && email === getEnvAdminEmail()) {
-    const envPass = process.env.ADMIN_PASSWORD!.trim();
-    if (!safeEqualStrings(password, envPass)) {
-      return NextResponse.json(
-        { error: "Invalid email or password." },
-        { status: 401 }
-      );
-    }
-
-    let adminUser = await findUserByEmail(email);
-    if (!adminUser) {
-      const created = await createUser({
-        name: "Akvai Admin",
-        email,
-        passwordHash: hashPassword(envPass),
-        role: "admin",
-      });
-      const token = signSessionToken(created);
-      return NextResponse.json({ user: created, token });
-    }
-
-    if (adminUser.role !== "admin") {
-      await updateUserRole(adminUser.id, "admin");
-      adminUser = { ...adminUser, role: "admin" };
-    }
-
-    const publicUser = {
-      id: adminUser.id,
-      name: adminUser.name,
-      email: adminUser.email,
-      role: adminUser.role,
-      createdAt: adminUser.createdAt,
-    };
-    const token = signSessionToken(publicUser);
-    return NextResponse.json({ user: publicUser, token });
+  const emailLimit = checkRateLimit({
+    bucket: "login-email",
+    key: email,
+    maxRequests: 8,
+    windowMs: 15 * 60 * 1000,
+  });
+  if (!emailLimit.allowed) {
+    return secureJson(
+      {
+        error: `Account temporarily locked due to failed attempts. Try again in ${emailLimit.retryAfterSeconds}s.`,
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(emailLimit.retryAfterSeconds) },
+      }
+    );
   }
 
   const storedUser = await findUserByEmail(email);
   if (!storedUser || !verifyPassword(password, storedUser.passwordHash)) {
-    return NextResponse.json(
+    return secureJson(
+      { error: "Invalid email or password." },
+      { status: 401 }
+    );
+  }
+
+  // Prevent owner admin accounts from authenticating via public login form
+  if (storedUser.role === "admin") {
+    return secureJson(
       { error: "Invalid email or password." },
       { status: 401 }
     );
@@ -84,8 +104,9 @@ export async function POST(request: NextRequest) {
     name: storedUser.name,
     email: storedUser.email,
     role: storedUser.role,
+    emailVerified: storedUser.emailVerified,
     createdAt: storedUser.createdAt,
   };
   const token = signSessionToken(publicUser);
-  return NextResponse.json({ user: publicUser, token });
+  return secureJson({ user: publicUser, token });
 }

@@ -17,10 +17,12 @@ import {
   LayoutDashboard,
   Link2,
   Loader2,
+  Mail,
   PlugZap,
   Plus,
   RefreshCw,
   Save,
+  Send,
   ShieldCheck,
   Trash2,
   Type,
@@ -38,6 +40,7 @@ import type {
   ServiceItem,
   ShowcaseItem,
   SiteConfig,
+  SmtpStatus,
   UserRole,
 } from "@/lib/types";
 
@@ -49,6 +52,7 @@ type AdminSection =
   | "orders"
   | "users"
   | "mongodb"
+  | "smtp"
   | "security";
 
 const ADMIN_TABS: { id: AdminSection; label: string; icon: typeof LayoutDashboard }[] = [
@@ -59,6 +63,7 @@ const ADMIN_TABS: { id: AdminSection; label: string; icon: typeof LayoutDashboar
   { id: "orders", label: "Orders", icon: ClipboardList },
   { id: "users", label: "Users", icon: Users },
   { id: "mongodb", label: "MongoDB", icon: Database },
+  { id: "smtp", label: "Email / OTP", icon: Mail },
   { id: "security", label: "Secret URL", icon: KeyRound },
 ];
 
@@ -125,6 +130,18 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
   const [newPassword, setNewPassword] = useState("");
   const [updatingPass, setUpdatingPass] = useState(false);
 
+  // Free Email OTP (SMTP) Control state
+  const [smtpStatus, setSmtpStatus] = useState<SmtpStatus | null>(null);
+  const [smtpHost, setSmtpHost] = useState("smtp.gmail.com");
+  const [smtpPort, setSmtpPort] = useState("465");
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");
+  const [smtpFrom, setSmtpFrom] = useState("");
+  const [showSmtpPass, setShowSmtpPass] = useState(false);
+  const [savingSmtp, setSavingSmtp] = useState(false);
+  const [testEmailTo, setTestEmailTo] = useState("");
+  const [sendingTestEmail, setSendingTestEmail] = useState(false);
+
   const adminFetch = useCallback(
     (url: string, init: RequestInit = {}) => {
       const headers = new Headers(init.headers);
@@ -147,11 +164,12 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
 
   const loadAdminData = useCallback(async () => {
     try {
-      const [ordersRes, usersRes, mongoRes, secRes] = await Promise.all([
+      const [ordersRes, usersRes, mongoRes, secRes, smtpRes] = await Promise.all([
         adminFetch("/api/orders?scope=all"),
         adminFetch("/api/admin/users"),
         adminFetch("/api/admin/mongodb"),
         adminFetch("/api/admin/portal-security"),
+        adminFetch("/api/admin/smtp"),
       ]);
       if (ordersRes.ok) {
         const d = (await ordersRes.json()) as { orders?: OrderItem[] };
@@ -173,6 +191,15 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
         if (d.security) {
           setSecurity(d.security);
           setNewSlug(d.security.activeSlug);
+        }
+      }
+      if (smtpRes.ok) {
+        const d = (await smtpRes.json()) as { status?: SmtpStatus };
+        if (d.status) {
+          setSmtpStatus(d.status);
+          if (d.status.host) setSmtpHost(d.status.host);
+          if (d.status.port) setSmtpPort(String(d.status.port));
+          if (d.status.fromAddress) setSmtpFrom(d.status.fromAddress);
         }
       }
     } catch {
@@ -372,6 +399,82 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
       }
     } finally {
       setConnectingMongo(false);
+    }
+  };
+
+  const handleConnectSmtp = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSavingSmtp(true);
+    try {
+      const res = await adminFetch("/api/admin/smtp", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "connect",
+          host: smtpHost,
+          port: Number(smtpPort),
+          user: smtpUser,
+          pass: smtpPass,
+          from: smtpFrom || smtpUser,
+        }),
+      });
+      const data = (await res.json()) as {
+        status?: SmtpStatus;
+        message?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.status) {
+        notify("err", data.error || "Could not verify SMTP connection.");
+        return;
+      }
+      setSmtpStatus(data.status);
+      setSmtpPass("");
+      notify("ok", data.message || "SMTP connected! Real Email OTP is now active.");
+    } catch {
+      notify("err", "Network error while verifying SMTP.");
+    } finally {
+      setSavingSmtp(false);
+    }
+  };
+
+  const handleSendTestOtp = async () => {
+    setSendingTestEmail(true);
+    try {
+      const res = await adminFetch("/api/admin/smtp", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "test",
+          testEmail: testEmailTo.trim() || user?.email || "",
+        }),
+      });
+      const data = (await res.json()) as {
+        message?: string;
+        error?: string;
+        status?: SmtpStatus;
+      };
+      if (data.status) setSmtpStatus(data.status);
+      if (!res.ok) {
+        notify("err", data.error || "Failed to send test OTP email.");
+        return;
+      }
+      notify("ok", data.message || "Test verification email sent!");
+    } catch {
+      notify("err", "Network error while sending test email.");
+    } finally {
+      setSendingTestEmail(false);
+    }
+  };
+
+  const handleDisconnectSmtp = async () => {
+    setSavingSmtp(true);
+    try {
+      const res = await adminFetch("/api/admin/smtp", { method: "DELETE" });
+      const data = (await res.json()) as { status?: SmtpStatus };
+      if (res.ok && data.status) {
+        setSmtpStatus(data.status);
+        notify("ok", "Disconnected runtime SMTP settings.");
+      }
+    } finally {
+      setSavingSmtp(false);
     }
   };
 
@@ -1691,6 +1794,293 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
               <code className="font-mono text-white">MONGODB_URI</code> in your
               Vercel Environment Variables.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* FREE OWN-BACKEND EMAIL OTP (SMTP) CONTROL */}
+      {section === "smtp" && (
+        <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <div className="border border-[#E4E0D7] bg-white p-6 sm:p-8 lg:col-span-7">
+            <div className="flex items-center gap-2 text-[#0D5C43]">
+              <Mail className="h-5 w-5" />
+              <p className="text-xs font-semibold tracking-[0.14em]">
+                OWN-BACKEND EMAIL OTP (FREE SMTP)
+              </p>
+            </div>
+            <h2 className="mt-2 font-serif text-2xl font-bold text-[#1C1B19]">
+              Connect Free Gmail or Custom SMTP
+            </h2>
+            <p className="mt-1.5 text-sm leading-relaxed text-[#585651]">
+              Every new user signup requires a real 6-digit email OTP verified on
+              your server. Connect your own free Gmail App Password or Brevo/Zoho
+              SMTP below — zero third-party auth subscription needed.
+            </p>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSmtpHost("smtp.gmail.com");
+                  setSmtpPort("465");
+                }}
+                className="rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-1.5 text-xs font-semibold text-[#1C1B19] hover:border-[#0D5C43] hover:text-[#0D5C43]"
+              >
+                Gmail Free Preset (465)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSmtpHost("smtp-relay.brevo.com");
+                  setSmtpPort("587");
+                }}
+                className="rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-1.5 text-xs font-semibold text-[#1C1B19] hover:border-[#0D5C43] hover:text-[#0D5C43]"
+              >
+                Brevo Free 300/day (587)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSmtpHost("smtp.zoho.com");
+                  setSmtpPort("465");
+                }}
+                className="rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-1.5 text-xs font-semibold text-[#1C1B19] hover:border-[#0D5C43] hover:text-[#0D5C43]"
+              >
+                Zoho Mail (465)
+              </button>
+            </div>
+
+            <form onSubmit={handleConnectSmtp} className="mt-6 space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div className="sm:col-span-2">
+                  <label
+                    htmlFor="smtp-host"
+                    className="block text-xs font-semibold text-[#3C3B37]"
+                  >
+                    SMTP Host
+                  </label>
+                  <input
+                    id="smtp-host"
+                    type="text"
+                    required
+                    value={smtpHost}
+                    onChange={(e) => setSmtpHost(e.target.value)}
+                    placeholder="smtp.gmail.com"
+                    className="mt-1.5 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3.5 py-2.5 font-mono text-sm text-[#1C1B19] focus:border-[#0D5C43] focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="smtp-port"
+                    className="block text-xs font-semibold text-[#3C3B37]"
+                  >
+                    Port
+                  </label>
+                  <select
+                    id="smtp-port"
+                    value={smtpPort}
+                    onChange={(e) => setSmtpPort(e.target.value)}
+                    className="mt-1.5 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3.5 py-2.5 font-mono text-sm text-[#1C1B19] focus:border-[#0D5C43] focus:bg-white focus:outline-none"
+                  >
+                    <option value="465">465 (SSL)</option>
+                    <option value="587">587 (TLS)</option>
+                    <option value="2525">2525</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor="smtp-user"
+                    className="block text-xs font-semibold text-[#3C3B37]"
+                  >
+                    SMTP Email / Username
+                  </label>
+                  <input
+                    id="smtp-user"
+                    type="text"
+                    required
+                    value={smtpUser}
+                    onChange={(e) => setSmtpUser(e.target.value)}
+                    placeholder="yourgmail@gmail.com"
+                    className="mt-1.5 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3.5 py-2.5 text-sm text-[#1C1B19] focus:border-[#0D5C43] focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="smtp-pass"
+                    className="block text-xs font-semibold text-[#3C3B37]"
+                  >
+                    App Password / SMTP Key
+                  </label>
+                  <div className="relative mt-1.5">
+                    <input
+                      id="smtp-pass"
+                      type={showSmtpPass ? "text" : "password"}
+                      required
+                      value={smtpPass}
+                      onChange={(e) => setSmtpPass(e.target.value)}
+                      placeholder="16-char Gmail App Password"
+                      className="w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] py-2.5 pr-10 pl-3.5 text-sm text-[#1C1B19] focus:border-[#0D5C43] focus:bg-white focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSmtpPass((p) => !p)}
+                      aria-label={showSmtpPass ? "Hide password" : "Show password"}
+                      className="absolute top-1/2 right-2.5 -translate-y-1/2 text-[#6A6862] hover:text-[#1C1B19]"
+                    >
+                      {showSmtpPass ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="smtp-from"
+                  className="block text-xs font-semibold text-[#3C3B37]"
+                >
+                  Sender Email Address (optional, defaults to SMTP Username)
+                </label>
+                <input
+                  id="smtp-from"
+                  type="email"
+                  value={smtpFrom}
+                  onChange={(e) => setSmtpFrom(e.target.value)}
+                  placeholder="yourgmail@gmail.com"
+                  className="mt-1.5 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3.5 py-2.5 text-sm text-[#1C1B19] focus:border-[#0D5C43] focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              <div className="flex flex-wrap gap-3 pt-2">
+                <motion.button
+                  type="submit"
+                  disabled={savingSmtp}
+                  whileHover={prefersReducedMotion ? undefined : { y: -1 }}
+                  whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-[3px] bg-[#0D5C43] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#094734] disabled:opacity-60"
+                >
+                  {savingSmtp ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Verifying SMTP...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="h-4 w-4" />
+                      <span>Verify &amp; Connect SMTP</span>
+                    </>
+                  )}
+                </motion.button>
+
+                {smtpStatus?.configured && smtpStatus.source === "runtime" && (
+                  <button
+                    type="button"
+                    disabled={savingSmtp}
+                    onClick={() => void handleDisconnectSmtp()}
+                    className="inline-flex min-h-11 items-center gap-2 rounded-[3px] border border-[#E9C4B8] bg-[#FDF2EE] px-4 py-2.5 text-sm font-medium text-[#9A3412] hover:bg-[#FAE6DE]"
+                  >
+                    <Unplug className="h-4 w-4" />
+                    <span>Disconnect</span>
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
+
+          <div className="border border-[#1F1F1D] bg-[#1F1F1D] p-6 text-white sm:p-8 lg:col-span-5">
+            <p className="text-xs font-semibold tracking-[0.14em] text-[#E08A3C]">
+              OTP DELIVERY STATUS
+            </p>
+            <h3 className="mt-2 font-serif text-2xl font-bold text-white">
+              {smtpStatus?.configured
+                ? "Email OTP Ready"
+                : "SMTP Setup Required"}
+            </h3>
+
+            <dl className="mt-5 space-y-3 border-t border-[#33332F] pt-4 text-sm">
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-[#A5A39D]">Source</dt>
+                <dd className="font-mono text-xs text-white">
+                  {smtpStatus?.configured
+                    ? smtpStatus.source === "env"
+                      ? "Server Env Variables"
+                      : "Admin Live Connect"
+                    : "Not connected"}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-[#A5A39D]">SMTP Host</dt>
+                <dd className="truncate font-mono text-xs text-white">
+                  {smtpStatus?.host
+                    ? `${smtpStatus.host}:${smtpStatus.port}`
+                    : "—"}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-[#A5A39D]">Account</dt>
+                <dd className="truncate font-mono text-xs text-[#7FD3B2]">
+                  {smtpStatus?.maskedUser || "—"}
+                </dd>
+              </div>
+            </dl>
+
+            {smtpStatus?.configured && (
+              <div className="mt-6 border-t border-[#33332F] pt-5">
+                <label
+                  htmlFor="test-otp-email"
+                  className="block text-xs font-semibold text-[#D1CFC9]"
+                >
+                  Send Live Test OTP Email
+                </label>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    id="test-otp-email"
+                    type="email"
+                    value={testEmailTo}
+                    onChange={(e) => setTestEmailTo(e.target.value)}
+                    placeholder={user?.email || "owner@example.com"}
+                    className="min-w-0 flex-1 rounded-[3px] border border-[#3E3E39] bg-[#161614] px-3 py-2 text-xs text-white placeholder:text-[#787670] focus:border-[#E07A22] focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    disabled={sendingTestEmail}
+                    onClick={() => void handleSendTestOtp()}
+                    className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-[3px] bg-[#E07A22] px-3.5 py-2 text-xs font-semibold text-[#1A1918] hover:bg-[#CF6C18] disabled:opacity-60"
+                  >
+                    {sendingTestEmail ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Send className="h-3.5 w-3.5" />
+                    )}
+                    <span>Test</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6 border-t border-[#33332F] pt-4 text-xs leading-relaxed text-[#BFBDB7]">
+              <p className="font-semibold text-white">
+                How to use Gmail for Free (1 minute):
+              </p>
+              <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-[#A5A39D]">
+                <li>Turn on 2-Step Verification in your Google Account.</li>
+                <li>
+                  Open Google Account → Security → App Passwords and generate a
+                  16-digit password.
+                </li>
+                <li>
+                  Paste your Gmail + 16-digit App Password here (or in Vercel Env
+                  Vars <code className="font-mono text-white">SMTP_USER</code> &amp;{" "}
+                  <code className="font-mono text-white">SMTP_PASS</code>).
+                </li>
+              </ol>
+            </div>
           </div>
         </div>
       )}

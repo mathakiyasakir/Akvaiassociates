@@ -1,5 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { requireAuth } from "@/lib/auth";
+import {
+  checkRateLimit,
+  getClientIp,
+  hasUnsafeKeys,
+  secureJson,
+  verifySameOrigin,
+} from "@/lib/security";
 import { createOrder, listOrders } from "@/lib/store";
 
 export async function GET(request: NextRequest) {
@@ -11,39 +18,64 @@ export async function GET(request: NextRequest) {
     auth.user.role === "admin" && scope === "all" ? undefined : auth.user.id;
 
   const orders = await listOrders(filterByUser);
-  return NextResponse.json({ orders });
+  return secureJson({ orders });
 }
 
 export async function POST(request: NextRequest) {
+  if (!verifySameOrigin(request)) {
+    return secureJson({ error: "Forbidden request origin." }, { status: 403 });
+  }
+
   const auth = await requireAuth(request);
   if (auth.error) return auth.error;
+
+  const ip = getClientIp(request);
+  const limit = checkRateLimit({
+    bucket: "create-order",
+    key: `${auth.user.id}:${ip}`,
+    maxRequests: 10,
+    windowMs: 15 * 60 * 1000,
+  });
+  if (!limit.allowed) {
+    return secureJson(
+      { error: "Too many submissions in a short time. Please try again later." },
+      { status: 429 }
+    );
+  }
 
   let body: unknown;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
+    return secureJson({ error: "Invalid JSON payload." }, { status: 400 });
+  }
+
+  if (!body || typeof body !== "object" || hasUnsafeKeys(body)) {
+    return secureJson({ error: "Invalid input detected." }, { status: 400 });
   }
 
   const record = body as Record<string, unknown>;
   const serviceTitle =
     typeof record.serviceTitle === "string" ? record.serviceTitle.trim() : "";
   const projectType =
-    typeof record.projectType === "string" ? record.projectType.trim() : "Residential";
+    typeof record.projectType === "string"
+      ? record.projectType.trim()
+      : "Residential";
   const location =
     typeof record.location === "string" ? record.location.trim() : "";
   const budgetRange =
     typeof record.budgetRange === "string" ? record.budgetRange.trim() : "";
-  const message = typeof record.message === "string" ? record.message.trim() : "";
+  const message =
+    typeof record.message === "string" ? record.message.trim() : "";
 
   if (!serviceTitle || serviceTitle.length > 100) {
-    return NextResponse.json(
+    return secureJson(
       { error: "Please select a valid architectural service." },
       { status: 400 }
     );
   }
   if (message.length < 8 || message.length > 1500) {
-    return NextResponse.json(
+    return secureJson(
       { error: "Please describe your project (8 to 1500 characters)." },
       { status: 400 }
     );
@@ -60,5 +92,5 @@ export async function POST(request: NextRequest) {
     message,
   });
 
-  return NextResponse.json({ order }, { status: 201 });
+  return secureJson({ order }, { status: 201 });
 }
