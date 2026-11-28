@@ -8,30 +8,38 @@ interface BottomNavItem {
   id: AppTab;
   label: string;
   icon: typeof Home;
+  requiresAuth: boolean;
 }
 
 const BOTTOM_NAV_ITEMS: BottomNavItem[] = [
-  { id: "home", label: "Home", icon: Home },
-  { id: "service", label: "Service", icon: Layers },
-  { id: "orders", label: "Orders", icon: ClipboardList },
-  { id: "profile", label: "Profile", icon: User },
+  { id: "home", label: "Home", icon: Home, requiresAuth: false },
+  { id: "service", label: "Service", icon: Layers, requiresAuth: false },
+  { id: "orders", label: "Orders", icon: ClipboardList, requiresAuth: true },
+  { id: "profile", label: "Profile", icon: User, requiresAuth: true },
 ];
 
 export function BottomNav() {
   const prefersReducedMotion = useReducedMotion();
   const { user, activeTab, setActiveTab, orders, requireLoginOrRun } = useApp();
 
-  const handleSelect = (tab: AppTab) => {
-    requireLoginOrRun(() => {
-      setActiveTab(tab);
+  const handleSelect = (item: BottomNavItem) => {
+    if (!item.requiresAuth) {
+      setActiveTab(item.id);
       window.scrollTo({
         top: 0,
         behavior: prefersReducedMotion ? "auto" : "smooth",
       });
-    }, tab);
-  };
+      return;
+    }
 
-  const displayActiveTab: AppTab = user ? activeTab : "home";
+    requireLoginOrRun(() => {
+      setActiveTab(item.id);
+      window.scrollTo({
+        top: 0,
+        behavior: prefersReducedMotion ? "auto" : "smooth",
+      });
+    }, item.id);
+  };
 
   return (
     <nav
@@ -41,13 +49,13 @@ export function BottomNav() {
       <div className="mx-auto grid max-w-2xl grid-cols-4 gap-2 px-3 py-2 sm:px-6">
         {BOTTOM_NAV_ITEMS.map((item) => {
           const Icon = item.icon;
-          const isActive = displayActiveTab === item.id;
+          const isActive = activeTab === item.id;
 
           return (
             <motion.button
               key={item.id}
               type="button"
-              onClick={() => handleSelect(item.id)}
+              onClick={() => handleSelect(item)}
               whileTap={prefersReducedMotion ? undefined : { scale: 0.96 }}
               aria-current={isActive ? "page" : undefined}
               className={`relative flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-[8px] px-3 py-1.5 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0D5C43] ${

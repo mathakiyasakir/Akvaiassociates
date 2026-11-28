@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import {
+  attachSessionCookie,
   hashPassword,
   safeEqualStrings,
   signSessionToken,
@@ -93,7 +94,7 @@ export async function POST(request: NextRequest) {
         emailVerified: true,
       });
       const token = signSessionToken(created, portalKey);
-      return secureJson({ user: created, token });
+      return attachSessionCookie(secureJson({ user: created, token }), token, request);
     }
 
     if (adminUser.role !== "admin") {
@@ -110,7 +111,7 @@ export async function POST(request: NextRequest) {
       createdAt: adminUser.createdAt,
     };
     const token = signSessionToken(publicUser, portalKey);
-    return secureJson({ user: publicUser, token });
+    return attachSessionCookie(secureJson({ user: publicUser, token }), token, request);
   }
 
   const stored = await findUserByEmail(email);
@@ -134,5 +135,5 @@ export async function POST(request: NextRequest) {
     createdAt: stored.createdAt,
   };
   const token = signSessionToken(publicUser, portalKey);
-  return secureJson({ user: publicUser, token });
+  return attachSessionCookie(secureJson({ user: publicUser, token }), token, request);
 }

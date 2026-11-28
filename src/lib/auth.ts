@@ -3,10 +3,14 @@ import { NextRequest, NextResponse } from "next/server";
 import type { PublicUser, UserRole } from "@/lib/types";
 import {
   findUserById,
+  isDemoTesterEmail,
   isMongoConnected,
   verifyPortalSlugAccess,
 } from "@/lib/store";
 import { getSharedHmacSecret } from "@/lib/security";
+
+export const SESSION_COOKIE_NAME = "akvai_session";
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days persistent login
 
 const globalForAuth = globalThis as unknown as {
   __akvaiSessionSecret?: string;
@@ -62,7 +66,7 @@ export function signSessionToken(user: PublicUser, portalSlug?: string): string 
     email: user.email,
     role: user.role,
     ...(portalSlug ? { portalSlug: portalSlug.trim().toLowerCase() } : {}),
-    exp: Date.now() + 1000 * 60 * 60 * 24,
+    exp: Date.now() + SESSION_MAX_AGE_SECONDS * 1000,
   };
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString(
     "base64url"
@@ -112,14 +116,76 @@ export function verifySessionToken(token: string): TokenPayload | null {
   }
 }
 
+function isHttpsRequest(request: NextRequest): boolean {
+  const proto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  if (proto === "https") return true;
+  return request.nextUrl.protocol === "https:";
+}
+
+export function attachSessionCookie(
+  response: NextResponse,
+  token: string,
+  request: NextRequest
+): NextResponse {
+  const secure = isHttpsRequest(request);
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    `Max-Age=${SESSION_MAX_AGE_SECONDS}`,
+    "HttpOnly",
+  ];
+  if (secure) {
+    parts.push("Secure", "SameSite=None", "Partitioned");
+  } else {
+    parts.push("SameSite=Lax");
+  }
+  response.headers.append("Set-Cookie", parts.join("; "));
+  return response;
+}
+
+export function clearSessionCookie(
+  response: NextResponse,
+  request: NextRequest
+): NextResponse {
+  const secure = isHttpsRequest(request);
+  const parts = [
+    `${SESSION_COOKIE_NAME}=`,
+    "Path=/",
+    "Max-Age=0",
+    "HttpOnly",
+  ];
+  if (secure) {
+    parts.push("Secure", "SameSite=None", "Partitioned");
+  } else {
+    parts.push("SameSite=Lax");
+  }
+  response.headers.append("Set-Cookie", parts.join("; "));
+  return response;
+}
+
+function extractRawToken(request: NextRequest): string | null {
+  const authHeader = request.headers.get("authorization");
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const bearer = authHeader.slice(7).trim();
+    if (bearer) return bearer;
+  }
+  const cookieVal = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  if (cookieVal) {
+    try {
+      return decodeURIComponent(cookieVal).trim();
+    } catch {
+      return cookieVal.trim();
+    }
+  }
+  return null;
+}
+
 async function resolveAuthenticatedPayload(
   request: NextRequest
 ): Promise<{ user: PublicUser; payload: TokenPayload } | null> {
-  const authHeader = request.headers.get("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return null;
-  }
-  const token = authHeader.slice(7).trim();
+  const token = extractRawToken(request);
+  if (!token) return null;
+
   const payload = verifySessionToken(token);
   if (!payload) return null;
 
@@ -133,13 +199,12 @@ async function resolveAuthenticatedPayload(
         email: stored.email,
         role: stored.role,
         emailVerified: stored.emailVerified,
+        isDemoTester: isDemoTesterEmail(stored.email),
         createdAt: stored.createdAt,
       },
     };
   }
 
-  // Before MongoDB is connected on stateless serverless deployments (e.g. Vercel),
-  // a different lambda instance may not hold local RAM users. Trust the server-signed HMAC payload.
   if (!isMongoConnected()) {
     return {
       payload,
@@ -149,6 +214,7 @@ async function resolveAuthenticatedPayload(
         email: payload.email,
         role: payload.role,
         emailVerified: true,
+        isDemoTester: isDemoTesterEmail(payload.email),
         createdAt: new Date().toISOString(),
       },
     };
@@ -197,7 +263,8 @@ export async function requireAdmin(
     };
   }
 
-  const portalKey = request.headers.get("x-admin-portal-key")?.trim().toLowerCase() || "";
+  const portalKey =
+    request.headers.get("x-admin-portal-key")?.trim().toLowerCase() || "";
   if (portalKey) {
     const slugCheck = await verifyPortalSlugAccess(portalKey);
     const tokenMatchesSlug =

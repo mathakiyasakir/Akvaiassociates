@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -21,7 +20,7 @@ import {
   User,
   UserPlus,
 } from "lucide-react";
-import akvaiLogo from "../../public/images/akvai-logo.png";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useApp } from "@/components/AppContext";
 import type { PublicUser } from "@/lib/types";
 
@@ -82,6 +81,7 @@ export function LoginView() {
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           "X-Auth-Intent": loginIntentToken,
@@ -109,8 +109,8 @@ export function LoginView() {
         return;
       }
 
-      setSession(data.user, data.token);
-      router.replace("/");
+      const dest = setSession(data.user, data.token);
+      router.replace(dest);
     } catch {
       setError("Network error while connecting to server. Please try again.");
     } finally {
@@ -129,6 +129,7 @@ export function LoginView() {
 
     const res = await fetch("/api/auth/request-otp", {
       method: "POST",
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
         "X-Auth-Intent": loginIntentToken,
@@ -222,6 +223,7 @@ export function LoginView() {
     try {
       const res = await fetch("/api/auth/verify-otp", {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           "X-Auth-Intent": loginIntentToken,
@@ -256,8 +258,8 @@ export function LoginView() {
         return;
       }
 
-      setSession(data.user, data.token);
-      router.replace("/");
+      const dest = setSession(data.user, data.token);
+      router.replace(dest);
     } catch {
       setError("Network error while verifying OTP. Please try again.");
     } finally {
@@ -274,15 +276,7 @@ export function LoginView() {
             onClick={() => clearLoginIntent()}
             aria-label="Back to Akvai Associates"
           >
-            <Image
-              src={akvaiLogo}
-              alt="Akvai Associates"
-              width={92}
-              height={60}
-              priority
-              referrerPolicy="no-referrer"
-              className="h-12 w-auto object-contain"
-            />
+            <BrandLogo className="h-12 w-auto object-contain" />
           </Link>
           <Link
             href="/"

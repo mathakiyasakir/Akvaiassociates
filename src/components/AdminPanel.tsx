@@ -20,6 +20,7 @@ import {
   Mail,
   PlugZap,
   Plus,
+  Receipt,
   RefreshCw,
   Save,
   Send,
@@ -27,13 +28,20 @@ import {
   Trash2,
   Type,
   Unplug,
+  Upload,
   Users,
 } from "lucide-react";
 import { useApp } from "@/components/AppContext";
+import { AdminBillingGatewaysTab } from "@/components/AdminBillingGatewaysTab";
+import {
+  AdminOrderCard,
+  type AdminOrderPatchPayload,
+} from "@/components/AdminOrderCard";
 import type {
   MongoStatus,
   OrderItem,
   OrderStatus,
+  PaymentGatewayAdminStatus,
   PortalSecurityStatus,
   PublicUser,
   ServiceIconKey,
@@ -48,6 +56,7 @@ type AdminSection =
   | "overview"
   | "hero"
   | "services"
+  | "billing"
   | "showcase"
   | "orders"
   | "users"
@@ -57,10 +66,11 @@ type AdminSection =
 
 const ADMIN_TABS: { id: AdminSection; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "hero", label: "Hero & Brand", icon: Type },
-  { id: "services", label: "Services", icon: Layers },
+  { id: "hero", label: "Hero & Logo", icon: Type },
+  { id: "services", label: "Services & Prices", icon: Layers },
+  { id: "billing", label: "Billing & Gateways", icon: Receipt },
   { id: "showcase", label: "Showcase & Story", icon: ImageIcon },
-  { id: "orders", label: "Orders", icon: ClipboardList },
+  { id: "orders", label: "Orders & PDFs", icon: ClipboardList },
   { id: "users", label: "Users", icon: Users },
   { id: "mongodb", label: "MongoDB", icon: Database },
   { id: "smtp", label: "Email / OTP", icon: Mail },
@@ -82,6 +92,7 @@ const ORDER_STATUSES: OrderStatus[] = [
   "Pending",
   "In Review",
   "In Progress",
+  "Revision Requested",
   "Completed",
   "Cancelled",
 ];
@@ -142,6 +153,11 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
   const [testEmailTo, setTestEmailTo] = useState("");
   const [sendingTestEmail, setSendingTestEmail] = useState(false);
 
+  // Payment Gateway server-only status
+  const [gatewayStatus, setGatewayStatus] =
+    useState<PaymentGatewayAdminStatus | null>(null);
+  const [savingGateway, setSavingGateway] = useState(false);
+
   const adminFetch = useCallback(
     (url: string, init: RequestInit = {}) => {
       const headers = new Headers(init.headers);
@@ -164,13 +180,15 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
 
   const loadAdminData = useCallback(async () => {
     try {
-      const [ordersRes, usersRes, mongoRes, secRes, smtpRes] = await Promise.all([
-        adminFetch("/api/orders?scope=all"),
-        adminFetch("/api/admin/users"),
-        adminFetch("/api/admin/mongodb"),
-        adminFetch("/api/admin/portal-security"),
-        adminFetch("/api/admin/smtp"),
-      ]);
+      const [ordersRes, usersRes, mongoRes, secRes, smtpRes, gwRes] =
+        await Promise.all([
+          adminFetch("/api/orders?scope=all"),
+          adminFetch("/api/admin/users"),
+          adminFetch("/api/admin/mongodb"),
+          adminFetch("/api/admin/portal-security"),
+          adminFetch("/api/admin/smtp"),
+          adminFetch("/api/admin/payment-gateway"),
+        ]);
       if (ordersRes.ok) {
         const d = (await ordersRes.json()) as { orders?: OrderItem[] };
         if (Array.isArray(d.orders)) setAllOrders(d.orders);
@@ -201,6 +219,12 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
           if (d.status.port) setSmtpPort(String(d.status.port));
           if (d.status.fromAddress) setSmtpFrom(d.status.fromAddress);
         }
+      }
+      if (gwRes.ok) {
+        const d = (await gwRes.json()) as {
+          status?: PaymentGatewayAdminStatus;
+        };
+        if (d.status) setGatewayStatus(d.status);
       }
     } catch {
       notify("err", "Failed to load admin records.");
@@ -244,12 +268,83 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
       number: `${nextNum} /`,
       title: "New Architectural Service",
       description: "Describe the scope and value of this service.",
-      timeline: "4–8 weeks",
+      timeline: "3–7 days delivery",
+      priceInr: 2999,
+      requiresPlotDetails: true,
       deliverables: ["Initial consultation", "Concept & technical drawings"],
       icon: "compass",
       enabled: true,
     };
     setDraft((prev) => ({ ...prev, services: [...prev.services, newItem] }));
+  };
+
+  const handleLogoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.type !== "image/png" && !file.name.toLowerCase().endsWith(".png")) {
+      notify("err", "Website logo must be a transparent PNG (.png) file.");
+      return;
+    }
+    if (file.size > 1.4 * 1024 * 1024) {
+      notify("err", "Logo PNG file must be under 1.4 MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setDraft((prev) => ({
+        ...prev,
+        brand: {
+          ...prev.brand,
+          logoDataUrl: String(reader.result || ""),
+        },
+      }));
+      notify("ok", "Transparent PNG logo loaded! Click Save Changes to apply across the site.");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveRazorpaySecret = async (keyId: string, secret: string) => {
+    setSavingGateway(true);
+    try {
+      const res = await adminFetch("/api/admin/payment-gateway", {
+        method: "POST",
+        body: JSON.stringify({
+          razorpayKeyId: keyId,
+          razorpayKeySecret: secret || undefined,
+        }),
+      });
+      const data = (await res.json()) as {
+        status?: PaymentGatewayAdminStatus;
+        error?: string;
+      };
+      if (!res.ok || !data.status) {
+        notify("err", data.error || "Could not save Razorpay gateway keys.");
+        return;
+      }
+      setGatewayStatus(data.status);
+      notify("ok", "Razorpay gateway credentials saved securely on server.");
+    } catch {
+      notify("err", "Network error while saving Razorpay keys.");
+    } finally {
+      setSavingGateway(false);
+    }
+  };
+
+  const handleClearRazorpaySecret = async () => {
+    setSavingGateway(true);
+    try {
+      const res = await adminFetch("/api/admin/payment-gateway", {
+        method: "POST",
+        body: JSON.stringify({ clearSecret: true }),
+      });
+      const data = (await res.json()) as { status?: PaymentGatewayAdminStatus };
+      if (res.ok && data.status) {
+        setGatewayStatus(data.status);
+        notify("ok", "Cleared runtime Razorpay secret.");
+      }
+    } finally {
+      setSavingGateway(false);
+    }
   };
 
   const handleAddShowcase = () => {
@@ -265,10 +360,9 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
     setDraft((prev) => ({ ...prev, showcase: [...prev.showcase, newItem] }));
   };
 
-  const handleUpdateOrder = async (
+  const handlePatchOrder = async (
     orderId: string,
-    status: OrderStatus,
-    adminNote: string
+    payload: AdminOrderPatchPayload
   ) => {
     setUpdatingOrderId(orderId);
     try {
@@ -276,7 +370,7 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
         `/api/admin/orders/${encodeURIComponent(orderId)}`,
         {
           method: "PATCH",
-          body: JSON.stringify({ status, adminNote }),
+          body: JSON.stringify(payload),
         }
       );
       const data = (await res.json()) as { order?: OrderItem; error?: string };
@@ -288,7 +382,12 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
         prev.map((o) => (o.id === orderId ? data.order! : o))
       );
       await refreshOrders();
-      notify("ok", `Order ${orderId} updated to ${status}.`);
+      notify(
+        "ok",
+        payload.markCompleteWithDeliverables
+          ? `Order ${orderId} completed & architectural PDFs unlocked for client!`
+          : `Order ${orderId} updated successfully.`
+      );
     } catch {
       notify("err", "Network error updating order.");
     } finally {
@@ -738,6 +837,64 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
             </motion.button>
           </div>
 
+          {/* Website Transparent PNG Logo Control */}
+          <div className="border border-[#E5E1D8] bg-[#FAF9F5] p-5">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold tracking-[0.08em] text-[#0D5C43]">
+                  WEBSITE LOGO (TRANSPARENT PNG)
+                </p>
+                <p className="mt-1 text-xs text-[#585651]">
+                  Upload your own transparent PNG logo to replace the site logo
+                  at the exact same header, login, admin, and PDF bill receipt
+                  size.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <label className="inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-[3px] bg-[#E07A22] px-3.5 py-1.5 text-xs font-semibold text-[#1A1918] hover:bg-[#CF6C18]">
+                  <Upload className="h-3.5 w-3.5" />
+                  <span>Upload Transparent PNG</span>
+                  <input
+                    type="file"
+                    accept="image/png,.png"
+                    onChange={handleLogoUpload}
+                    className="hidden"
+                  />
+                </label>
+                {draft.brand.logoDataUrl && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraft((p) => ({
+                        ...p,
+                        brand: { ...p.brand, logoDataUrl: "" },
+                      }))
+                    }
+                    className="inline-flex min-h-9 items-center gap-1 rounded-[3px] border border-[#E9C4B8] bg-[#FDF2EE] px-3 py-1.5 text-xs font-medium text-[#9A3412]"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Reset Default</span>
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="mt-4 flex items-center gap-4 border-t border-[#E5E1D8] pt-4">
+              <div className="flex h-16 min-w-[120px] items-center justify-center rounded-[3px] border border-[#D8D3C8] bg-white px-4">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={draft.brand.logoDataUrl || "/images/akvai-logo.png"}
+                  alt="Active website logo preview"
+                  className="h-12 w-auto object-contain"
+                />
+              </div>
+              <p className="text-xs text-[#585651]">
+                {draft.brand.logoDataUrl
+                  ? "Custom PNG logo active. Click Save Changes to publish live."
+                  : "Using default Akvai Associates logo. Upload any transparent .png file to replace."}
+              </p>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold text-[#3C3B37]">
@@ -1098,22 +1255,25 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
                     ))}
                   </select>
                 </div>
-                <div className="md:col-span-2">
+                <div>
                   <label className="block text-xs font-semibold text-[#3C3B37]">
-                    Description
+                    Service Price (₹ INR)
                   </label>
                   <input
-                    type="text"
-                    value={service.description}
-                    onChange={(e) =>
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={service.priceInr}
+                    onChange={(e) => {
+                      const val = Math.max(0, Number(e.target.value) || 0);
                       setDraft((p) => ({
                         ...p,
                         services: p.services.map((s, i) =>
-                          i === index ? { ...s, description: e.target.value } : s
+                          i === index ? { ...s, priceInr: val } : s
                         ),
-                      }))
-                    }
-                    className="mt-1 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-2 text-sm"
+                      }));
+                    }}
+                    className="mt-1 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-2 font-mono text-sm"
                   />
                 </div>
                 <div>
@@ -1128,6 +1288,44 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
                         ...p,
                         services: p.services.map((s, i) =>
                           i === index ? { ...s, timeline: e.target.value } : s
+                        ),
+                      }))
+                    }
+                    className="mt-1 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-2 text-xs font-semibold text-[#1C1B19]">
+                    <input
+                      type="checkbox"
+                      checked={service.requiresPlotDetails}
+                      onChange={(e) =>
+                        setDraft((p) => ({
+                          ...p,
+                          services: p.services.map((s, i) =>
+                            i === index
+                              ? { ...s, requiresPlotDetails: e.target.checked }
+                              : s
+                          ),
+                        }))
+                      }
+                      className="h-4 w-4 accent-[#0D5C43]"
+                    />
+                    <span>Require Plot Dimensions &amp; North Side Form</span>
+                  </label>
+                </div>
+                <div className="md:col-span-3">
+                  <label className="block text-xs font-semibold text-[#3C3B37]">
+                    Description
+                  </label>
+                  <input
+                    type="text"
+                    value={service.description}
+                    onChange={(e) =>
+                      setDraft((p) => ({
+                        ...p,
+                        services: p.services.map((s, i) =>
+                          i === index ? { ...s, description: e.target.value } : s
                         ),
                       }))
                     }
@@ -1158,6 +1356,21 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
             </div>
           ))}
         </div>
+      )}
+
+      {/* BILLING & PAYMENT GATEWAYS */}
+      {section === "billing" && (
+        <AdminBillingGatewaysTab
+          draft={draft}
+          setDraft={setDraft}
+          savingConfig={savingConfig}
+          onSaveConfig={handleSaveConfig}
+          gatewayStatus={gatewayStatus}
+          onSaveRazorpaySecret={handleSaveRazorpaySecret}
+          onClearRazorpaySecret={handleClearRazorpaySecret}
+          savingGateway={savingGateway}
+          notify={notify}
+        />
       )}
 
       {/* SHOWCASE & PRACTICE */}
@@ -1466,9 +1679,11 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
               <AdminOrderCard
                 key={order.id}
                 order={order}
+                siteConfig={draft}
                 busy={updatingOrderId === order.id}
-                onUpdate={handleUpdateOrder}
+                onPatch={handlePatchOrder}
                 onDelete={handleDeleteOrder}
+                notify={notify}
               />
             ))
           )}
@@ -2243,97 +2458,6 @@ export function AdminPanel({ portalKey }: AdminPanelProps) {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function AdminOrderCard({
-  order,
-  busy,
-  onUpdate,
-  onDelete,
-}: {
-  order: OrderItem;
-  busy: boolean;
-  onUpdate: (id: string, status: OrderStatus, note: string) => Promise<void>;
-  onDelete: (id: string) => Promise<void>;
-}) {
-  const [status, setStatus] = useState<OrderStatus>(order.status);
-  const [note, setNote] = useState(order.adminNote);
-
-  return (
-    <div className="border border-[#E4E0D7] bg-white p-6">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#F0ECE4] pb-4">
-        <div>
-          <p className="font-mono text-xs font-semibold text-[#0D5C43]">
-            {order.id} · {order.projectType} · {order.budgetRange}
-          </p>
-          <h3 className="mt-1 text-lg font-semibold text-[#1C1B19]">
-            {order.serviceTitle}
-          </h3>
-          <p className="mt-0.5 text-xs text-[#6B6963]">
-            Client: {order.userName} ({order.userEmail}) · Site: {order.location}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => void onDelete(order.id)}
-          className="inline-flex h-9 items-center gap-1 rounded-[3px] px-2.5 text-xs font-medium text-[#9A3412] hover:bg-[#FDF2EE]"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          <span>Delete</span>
-        </button>
-      </div>
-
-      <p className="mt-4 text-sm leading-relaxed text-[#4E4C47]">
-        {order.message}
-      </p>
-
-      <div className="mt-5 grid grid-cols-1 gap-4 border-t border-[#F0ECE4] pt-4 md:grid-cols-12">
-        <div className="md:col-span-3">
-          <label className="block text-xs font-semibold text-[#3C3B37]">
-            Order Status
-          </label>
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value as OrderStatus)}
-            className="mt-1 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-2 text-sm"
-          >
-            {ORDER_STATUSES.map((st) => (
-              <option key={st} value={st}>
-                {st}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="md:col-span-6">
-          <label className="block text-xs font-semibold text-[#3C3B37]">
-            Architect Note (visible to client)
-          </label>
-          <input
-            type="text"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="e.g. Initial site review scheduled for Tuesday."
-            className="mt-1 w-full rounded-[3px] border border-[#D8D3C8] bg-[#FAF9F5] px-3 py-2 text-sm"
-          />
-        </div>
-        <div className="flex items-end md:col-span-3">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void onUpdate(order.id, status, note)}
-            className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-[3px] bg-[#0D5C43] px-4 py-2 text-xs font-semibold text-white hover:bg-[#094734] disabled:opacity-60"
-          >
-            {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Save className="h-3.5 w-3.5" />
-            )}
-            <span>Update Order</span>
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

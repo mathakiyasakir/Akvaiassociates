@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
@@ -17,7 +16,7 @@ import {
   ShieldCheck,
   User,
 } from "lucide-react";
-import akvaiLogo from "../../public/images/akvai-logo.png";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useApp } from "@/components/AppContext";
 import { AdminPanel } from "@/components/AdminPanel";
 import type { PublicUser } from "@/lib/types";
@@ -67,6 +66,7 @@ export function HiddenAdminPortal({
     try {
       const res = await fetch("/api/auth/setup-admin", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           portalKey: activePortalKey,
@@ -111,6 +111,7 @@ export function HiddenAdminPortal({
     try {
       const res = await fetch("/api/auth/admin-login", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           portalKey: activePortalKey,
@@ -143,13 +144,9 @@ export function HiddenAdminPortal({
           <div className="mx-auto flex h-[68px] max-w-6xl items-center justify-between gap-6 px-6">
             <div className="flex items-center gap-3">
               <div className="rounded-[3px] bg-white px-2 py-1">
-                <Image
-                  src={akvaiLogo}
-                  alt="Akvai Associates"
+                <BrandLogo
                   width={68}
                   height={44}
-                  priority
-                  referrerPolicy="no-referrer"
                   className="h-8 w-auto object-contain"
                 />
               </div>
@@ -169,7 +166,7 @@ export function HiddenAdminPortal({
               <button
                 type="button"
                 onClick={() => {
-                  logout();
+                  void logout();
                 }}
                 className="inline-flex min-h-9 items-center gap-1.5 rounded-[3px] bg-[#E07A22] px-3.5 py-1.5 text-xs font-semibold text-[#1A1918] transition-colors hover:bg-[#CF6C18]"
               >
@@ -190,13 +187,9 @@ export function HiddenAdminPortal({
       <header className="border-b border-[#262623] bg-[#181816]">
         <div className="mx-auto flex h-[72px] max-w-5xl items-center justify-between px-6">
           <div className="rounded-[3px] bg-white px-2.5 py-1">
-            <Image
-              src={akvaiLogo}
-              alt="Akvai Associates"
+            <BrandLogo
               width={78}
               height={50}
-              priority
-              referrerPolicy="no-referrer"
               className="h-9 w-auto object-contain"
             />
           </div>

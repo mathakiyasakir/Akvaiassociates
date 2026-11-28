@@ -3,8 +3,14 @@ import { MongoClient, type Db } from "mongodb";
 import { DEFAULT_SITE_CONFIG } from "@/lib/default-data";
 import type {
   MongoStatus,
+  OrderDeliverablePdf,
   OrderItem,
+  OrderPaymentInfo,
+  OrderRevisionRequest,
   OrderStatus,
+  PaymentGatewayAdminStatus,
+  PaymentStatus,
+  PlotDetails,
   PublicUser,
   SiteConfig,
   StoredUser,
@@ -16,6 +22,7 @@ interface RuntimeState {
   users: StoredUser[];
   orders: OrderItem[];
   customAdminSlug: string | null;
+  razorpayKeySecret: string | null;
   mongoClient: MongoClient | null;
   mongoDb: Db | null;
   mongoSource: "env" | "runtime" | "local";
@@ -49,6 +56,7 @@ function getState(): RuntimeState {
       users: [],
       orders: [],
       customAdminSlug: null,
+      razorpayKeySecret: null,
       mongoClient: null,
       mongoDb: null,
       mongoSource: "local",
@@ -459,7 +467,43 @@ export async function verifyPortalSlugAccess(
   return { allowed: false, mode: "denied" };
 }
 
-// --- Site Configuration ---
+// --- Site Configuration & Payment Gateway Secrets ---
+
+function hydrateSiteConfig(raw?: Partial<SiteConfig> | null): SiteConfig {
+  const base = structuredClone(DEFAULT_SITE_CONFIG);
+  if (!raw) return base;
+
+  const services = Array.isArray(raw.services) && raw.services.length > 0
+    ? raw.services.map((s, idx) => ({
+        ...s,
+        priceInr:
+          typeof s.priceInr === "number" && Number.isFinite(s.priceInr) && s.priceInr >= 0
+            ? Math.round(s.priceInr)
+            : base.services[idx]?.priceInr ?? 2999,
+        requiresPlotDetails:
+          typeof s.requiresPlotDetails === "boolean" ? s.requiresPlotDetails : true,
+      }))
+    : base.services;
+
+  const envRzpKey = process.env.RAZORPAY_KEY_ID?.trim();
+
+  return {
+    brand: { ...base.brand, ...(raw.brand || {}) },
+    hero: { ...base.hero, ...(raw.hero || {}) },
+    servicesSection: { ...base.servicesSection, ...(raw.servicesSection || {}) },
+    services,
+    showcaseSection: { ...base.showcaseSection, ...(raw.showcaseSection || {}) },
+    showcase: Array.isArray(raw.showcase) && raw.showcase.length > 0 ? raw.showcase : base.showcase,
+    practice: { ...base.practice, ...(raw.practice || {}) },
+    contact: { ...base.contact, ...(raw.contact || {}) },
+    billing: { ...base.billing, ...(raw.billing || {}) },
+    payment: {
+      ...base.payment,
+      ...(raw.payment || {}),
+      razorpayKeyId: raw.payment?.razorpayKeyId || envRzpKey || "",
+    },
+  };
+}
 
 export async function getSiteConfig(): Promise<SiteConfig> {
   const state = getState();
@@ -469,30 +513,120 @@ export async function getSiteConfig(): Promise<SiteConfig> {
       .collection<{ _id: string; config: SiteConfig }>("site_config")
       .findOne({ _id: "primary" });
     if (doc?.config) {
-      state.siteConfig = doc.config;
-      return doc.config;
+      state.siteConfig = hydrateSiteConfig(doc.config);
+      return state.siteConfig;
     }
   }
+  state.siteConfig = hydrateSiteConfig(state.siteConfig);
   return state.siteConfig;
 }
 
 export async function saveSiteConfig(nextConfig: SiteConfig): Promise<SiteConfig> {
   const state = getState();
-  state.siteConfig = nextConfig;
+  const hydrated = hydrateSiteConfig(nextConfig);
+  state.siteConfig = hydrated;
   const db = await getActiveDb();
   if (db) {
     await db
       .collection<{ _id: string; config: SiteConfig }>("site_config")
       .updateOne(
         { _id: "primary" },
-        { $set: { config: nextConfig } },
+        { $set: { config: hydrated } },
         { upsert: true }
       );
   }
-  return nextConfig;
+  return hydrated;
 }
 
-// --- Users & Admin Setup ---
+export function getRazorpayCredentials(): {
+  keyId: string | null;
+  keySecret: string | null;
+  source: "env" | "runtime" | "none";
+} {
+  const envId = process.env.RAZORPAY_KEY_ID?.trim();
+  const envSecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  if (envId && envSecret) {
+    return { keyId: envId, keySecret: envSecret, source: "env" };
+  }
+  const state = getState();
+  const runtimeId = state.siteConfig.payment?.razorpayKeyId?.trim();
+  const runtimeSecret = state.razorpayKeySecret?.trim();
+  if (runtimeId && runtimeSecret) {
+    return { keyId: runtimeId, keySecret: runtimeSecret, source: "runtime" };
+  }
+  return { keyId: envId || runtimeId || null, keySecret: null, source: "none" };
+}
+
+export function setRuntimeRazorpaySecret(secret: string | null): void {
+  const state = getState();
+  state.razorpayKeySecret = secret && secret.trim() ? secret.trim() : null;
+}
+
+export function getPaymentGatewayAdminStatus(): PaymentGatewayAdminStatus {
+  const creds = getRazorpayCredentials();
+  const keyId = creds.keyId;
+  const masked = keyId
+    ? `${keyId.slice(0, Math.min(8, keyId.length))}****${keyId.slice(-4)}`
+    : null;
+  return {
+    razorpaySecretConfigured: Boolean(creds.keyId && creds.keySecret),
+    razorpaySource: creds.source,
+    maskedRazorpayKeyId: masked,
+  };
+}
+
+// --- Users, Dedicated Test User & Admin Setup ---
+
+export const DEMO_TEST_USER_EMAIL = (
+  process.env.DEMO_TEST_USER_EMAIL?.trim() || "akvaiassociates@user.com"
+).toLowerCase();
+
+export function getDemoTestUserPassword(): string {
+  return process.env.DEMO_TEST_USER_PASSWORD?.trim() || "akvai2026";
+}
+
+export function isDemoTesterEmail(email?: string | null): boolean {
+  if (!email || typeof email !== "string") return false;
+  return email.trim().toLowerCase() === DEMO_TEST_USER_EMAIL;
+}
+
+export async function ensureDemoTestUser(
+  passwordHash: string
+): Promise<StoredUser> {
+  const existing = await findUserByEmail(DEMO_TEST_USER_EMAIL);
+  if (existing && existing.role === "user") {
+    return existing;
+  }
+
+  const demoUser: StoredUser = {
+    id: "usr_demo_akvai_tester",
+    name: "Akvai Test Client",
+    email: DEMO_TEST_USER_EMAIL,
+    passwordHash,
+    role: "user",
+    emailVerified: true,
+    createdAt: new Date().toISOString(),
+  };
+
+  const state = getState();
+  if (!state.users.some((u) => u.email === DEMO_TEST_USER_EMAIL)) {
+    state.users.unshift(demoUser);
+  }
+
+  const db = await getActiveDb();
+  if (db) {
+    const dbExisting = await db
+      .collection<StoredUser>("users")
+      .findOne({ email: DEMO_TEST_USER_EMAIL });
+    if (!dbExisting) {
+      await db.collection<StoredUser>("users").insertOne({ ...demoUser });
+    } else {
+      return { ...dbExisting };
+    }
+  }
+
+  return demoUser;
+}
 
 export function hasEnvAdminConfigured(): boolean {
   return Boolean(
@@ -667,41 +801,78 @@ export async function deleteUserById(userId: string): Promise<boolean> {
 
 // --- Orders / Enquiries ---
 
+function normalizeOrder(raw: OrderItem): OrderItem {
+  return {
+    ...raw,
+    invoiceNumber: raw.invoiceNumber || `INV-${raw.id.replace("ORD-", "AKV-")}`,
+    payment: raw.payment || {
+      amountInr: 0,
+      method: "Pay on Confirmation",
+      status: "Unpaid",
+      referenceId: raw.id,
+      paidAt: raw.createdAt,
+    },
+    deliverables: Array.isArray(raw.deliverables) ? raw.deliverables : [],
+    revisions: Array.isArray(raw.revisions) ? raw.revisions : [],
+  };
+}
+
 export async function listOrders(filterUserId?: string): Promise<OrderItem[]> {
   const db = await getActiveDb();
   if (db) {
     const query = filterUserId ? { userId: filterUserId } : {};
-    return db
+    const docs = await db
       .collection<OrderItem>("orders")
       .find(query)
       .sort({ createdAt: -1 })
       .toArray();
+    return docs.map(normalizeOrder);
   }
-  const all = getState().orders;
+  const all = getState().orders.map(normalizeOrder);
   return filterUserId ? all.filter((o) => o.userId === filterUserId) : all;
+}
+
+export async function findOrderById(orderId: string): Promise<OrderItem | null> {
+  const db = await getActiveDb();
+  if (db) {
+    const doc = await db.collection<OrderItem>("orders").findOne({ id: orderId });
+    return doc ? normalizeOrder(doc) : null;
+  }
+  const found = getState().orders.find((o) => o.id === orderId);
+  return found ? normalizeOrder(found) : null;
 }
 
 export async function createOrder(input: {
   userId: string;
   userName: string;
   userEmail: string;
+  serviceId?: string;
   serviceTitle: string;
   projectType: string;
   location: string;
   budgetRange: string;
   message: string;
+  plotDetails?: PlotDetails;
+  payment: OrderPaymentInfo;
 }): Promise<OrderItem> {
   const now = new Date().toISOString();
+  const suffix = crypto.randomBytes(3).toString("hex").toUpperCase();
   const order: OrderItem = {
-    id: `ORD-${crypto.randomBytes(3).toString("hex").toUpperCase()}`,
+    id: `ORD-${suffix}`,
+    invoiceNumber: `INV-AKV-${new Date().getFullYear()}-${suffix}`,
     userId: input.userId,
     userName: input.userName,
     userEmail: input.userEmail,
+    serviceId: input.serviceId,
     serviceTitle: input.serviceTitle.trim(),
     projectType: input.projectType.trim() || "Residential",
     location: input.location.trim() || "Not specified",
-    budgetRange: input.budgetRange.trim() || "To be discussed",
+    budgetRange: input.budgetRange.trim() || "Standard",
     message: input.message.trim(),
+    plotDetails: input.plotDetails,
+    payment: input.payment,
+    deliverables: [],
+    revisions: [],
     status: "Pending",
     adminNote: "",
     createdAt: now,
@@ -721,35 +892,152 @@ export async function createOrder(input: {
 
 export async function updateOrderAdmin(
   orderId: string,
-  updates: { status?: OrderStatus; adminNote?: string }
+  updates: {
+    status?: OrderStatus;
+    adminNote?: string;
+    paymentStatus?: PaymentStatus;
+    addDeliverables?: OrderDeliverablePdf[];
+    removeDeliverableId?: string;
+    markRevisionsResolved?: boolean;
+  }
 ): Promise<OrderItem | null> {
   const state = getState();
   const now = new Date().toISOString();
-  const db = await getActiveDb();
+  const current = await findOrderById(orderId);
+  if (!current) return null;
 
-  if (db) {
-    const setFields: Partial<OrderItem> = { updatedAt: now };
-    if (updates.status) setFields.status = updates.status;
-    if (typeof updates.adminNote === "string") setFields.adminNote = updates.adminNote;
-
-    await db
-      .collection<OrderItem>("orders")
-      .updateOne({ id: orderId }, { $set: setFields });
-    const updated = await db.collection<OrderItem>("orders").findOne({ id: orderId });
-    if (!updated) return null;
-    const localIdx = state.orders.findIndex((o) => o.id === orderId);
-    if (localIdx >= 0) {
-      state.orders[localIdx] = { ...updated };
-    }
-    return updated;
+  let nextDeliverables = [...(current.deliverables || [])];
+  if (updates.removeDeliverableId) {
+    nextDeliverables = nextDeliverables.filter(
+      (d) => d.id !== updates.removeDeliverableId
+    );
+  }
+  if (Array.isArray(updates.addDeliverables) && updates.addDeliverables.length > 0) {
+    nextDeliverables = [...nextDeliverables, ...updates.addDeliverables].slice(0, 10);
   }
 
-  const order = state.orders.find((o) => o.id === orderId);
-  if (!order) return null;
-  if (updates.status) order.status = updates.status;
-  if (typeof updates.adminNote === "string") order.adminNote = updates.adminNote;
-  order.updatedAt = now;
-  return order;
+  const nextPayment: OrderPaymentInfo = {
+    ...current.payment,
+    ...(updates.paymentStatus ? { status: updates.paymentStatus } : {}),
+  };
+
+  const nextRevisions: OrderRevisionRequest[] = updates.markRevisionsResolved
+    ? current.revisions.map((r) => ({ ...r, resolved: true }))
+    : current.revisions;
+
+  const nextOrder: OrderItem = {
+    ...current,
+    status: updates.status ?? current.status,
+    adminNote:
+      typeof updates.adminNote === "string" ? updates.adminNote : current.adminNote,
+    payment: nextPayment,
+    deliverables: nextDeliverables,
+    revisions: nextRevisions,
+    updatedAt: now,
+  };
+
+  const localIdx = state.orders.findIndex((o) => o.id === orderId);
+  if (localIdx >= 0) {
+    state.orders[localIdx] = nextOrder;
+  }
+
+  const db = await getActiveDb();
+  if (db) {
+    await db.collection<OrderItem>("orders").updateOne(
+      { id: orderId },
+      {
+        $set: {
+          status: nextOrder.status,
+          adminNote: nextOrder.adminNote,
+          payment: nextOrder.payment,
+          deliverables: nextOrder.deliverables,
+          revisions: nextOrder.revisions,
+          updatedAt: now,
+        },
+      }
+    );
+  }
+
+  return nextOrder;
+}
+
+export async function submitOrderReview(
+  orderId: string,
+  userId: string,
+  rating: number,
+  comment: string
+): Promise<OrderItem | null> {
+  const state = getState();
+  const current = await findOrderById(orderId);
+  if (!current || current.userId !== userId) return null;
+
+  const now = new Date().toISOString();
+  const review = {
+    rating: Math.max(1, Math.min(5, Math.round(rating))),
+    comment: comment.trim().slice(0, 800),
+    createdAt: now,
+  };
+
+  const nextOrder: OrderItem = {
+    ...current,
+    review,
+    updatedAt: now,
+  };
+
+  const localIdx = state.orders.findIndex((o) => o.id === orderId);
+  if (localIdx >= 0) state.orders[localIdx] = nextOrder;
+
+  const db = await getActiveDb();
+  if (db) {
+    await db
+      .collection<OrderItem>("orders")
+      .updateOne({ id: orderId, userId }, { $set: { review, updatedAt: now } });
+  }
+  return nextOrder;
+}
+
+export async function requestOrderRevision(
+  orderId: string,
+  userId: string,
+  note: string
+): Promise<OrderItem | null> {
+  const state = getState();
+  const current = await findOrderById(orderId);
+  if (!current || current.userId !== userId) return null;
+
+  const now = new Date().toISOString();
+  const rev: OrderRevisionRequest = {
+    id: `REV-${crypto.randomBytes(2).toString("hex").toUpperCase()}`,
+    note: note.trim().slice(0, 1000),
+    createdAt: now,
+    resolved: false,
+  };
+
+  const nextRevisions = [...(current.revisions || []), rev].slice(-10);
+  const nextOrder: OrderItem = {
+    ...current,
+    revisions: nextRevisions,
+    status: "Revision Requested",
+    updatedAt: now,
+  };
+
+  const localIdx = state.orders.findIndex((o) => o.id === orderId);
+  if (localIdx >= 0) state.orders[localIdx] = nextOrder;
+
+  const db = await getActiveDb();
+  if (db) {
+    await db.collection<OrderItem>("orders").updateOne(
+      { id: orderId, userId },
+      {
+        $set: {
+          revisions: nextRevisions,
+          status: "Revision Requested",
+          updatedAt: now,
+        },
+      }
+    );
+  }
+  return nextOrder;
 }
 
 export async function deleteOrderById(orderId: string): Promise<boolean> {

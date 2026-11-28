@@ -1,5 +1,11 @@
 import { NextRequest } from "next/server";
-import { signSessionToken, verifyPassword } from "@/lib/auth";
+import {
+  attachSessionCookie,
+  hashPassword,
+  safeEqualStrings,
+  signSessionToken,
+  verifyPassword,
+} from "@/lib/auth";
 import {
   checkRateLimit,
   getClientIp,
@@ -8,7 +14,12 @@ import {
   verifyLoginIntentToken,
   verifySameOrigin,
 } from "@/lib/security";
-import { findUserByEmail } from "@/lib/store";
+import {
+  ensureDemoTestUser,
+  findUserByEmail,
+  getDemoTestUserPassword,
+  isDemoTesterEmail,
+} from "@/lib/store";
 
 export async function POST(request: NextRequest) {
   if (!verifySameOrigin(request)) {
@@ -83,8 +94,30 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const storedUser = await findUserByEmail(email);
-  if (!storedUser || !verifyPassword(password, storedUser.passwordHash)) {
+  const isDemoAccount = isDemoTesterEmail(email);
+  let storedUser = await findUserByEmail(email);
+
+  if (isDemoAccount) {
+    const demoPassword = getDemoTestUserPassword();
+    const matchesDemoPass = safeEqualStrings(password, demoPassword);
+    if (!storedUser) {
+      if (!matchesDemoPass) {
+        return secureJson(
+          { error: "Invalid email or password." },
+          { status: 401 }
+        );
+      }
+      storedUser = await ensureDemoTestUser(hashPassword(demoPassword));
+    } else if (
+      !matchesDemoPass &&
+      !verifyPassword(password, storedUser.passwordHash)
+    ) {
+      return secureJson(
+        { error: "Invalid email or password." },
+        { status: 401 }
+      );
+    }
+  } else if (!storedUser || !verifyPassword(password, storedUser.passwordHash)) {
     return secureJson(
       { error: "Invalid email or password." },
       { status: 401 }
@@ -105,8 +138,9 @@ export async function POST(request: NextRequest) {
     email: storedUser.email,
     role: storedUser.role,
     emailVerified: storedUser.emailVerified,
+    isDemoTester: isDemoAccount,
     createdAt: storedUser.createdAt,
   };
   const token = signSessionToken(publicUser);
-  return secureJson({ user: publicUser, token });
+  return attachSessionCookie(secureJson({ user: publicUser, token }), token, request);
 }

@@ -5,14 +5,30 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { DEFAULT_SITE_CONFIG } from "@/lib/default-data";
 import type { OrderItem, PublicUser, SiteConfig } from "@/lib/types";
 
 export type AppTab = "home" | "service" | "orders" | "profile";
+
+export const TAB_PATHS: Record<AppTab, string> = {
+  home: "/",
+  service: "/services",
+  orders: "/orders",
+  profile: "/profile",
+};
+
+function pathnameToTab(pathname: string | null): AppTab {
+  if (!pathname) return "home";
+  if (pathname.startsWith("/services")) return "service";
+  if (pathname.startsWith("/orders")) return "orders";
+  if (pathname.startsWith("/profile")) return "profile";
+  return "home";
+}
 
 interface AppContextValue {
   user: PublicUser | null;
@@ -25,9 +41,9 @@ interface AppContextValue {
   orders: OrderItem[];
   loadingData: boolean;
   authFetch: (input: string, init?: RequestInit) => Promise<Response>;
-  setSession: (user: PublicUser, token: string) => void;
+  setSession: (user: PublicUser, token: string) => string;
   clearLoginIntent: () => void;
-  logout: () => void;
+  logout: () => Promise<void>;
   requireLoginOrRun: (action: () => void, afterLoginTab?: AppTab) => boolean;
   refreshSiteConfig: () => Promise<void>;
   refreshOrders: () => Promise<void>;
@@ -50,15 +66,27 @@ const BLOCKED_AUTH_HASHES = new Set([
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [user, setUser] = useState<PublicUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [loginIntentToken, setLoginIntentToken] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [activeTab, setActiveTab] = useState<AppTab>("home");
-  const [pendingTab, setPendingTab] = useState<AppTab | null>(null);
+  const [pendingPath, setPendingPath] = useState<string | null>(null);
   const [siteConfig, setSiteConfig] = useState<SiteConfig>(DEFAULT_SITE_CONFIG);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [loadingData, setLoadingData] = useState(false);
+
+  const activeTab = useMemo(() => pathnameToTab(pathname), [pathname]);
+
+  const setActiveTab = useCallback(
+    (tab: AppTab) => {
+      const target = TAB_PATHS[tab] || "/";
+      if (pathname !== target) {
+        router.push(target);
+      }
+    },
+    [pathname, router]
+  );
 
   // Strip direct #login / #admin / #auth URL hash tampering without opening login
   useEffect(() => {
@@ -79,7 +107,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const loadPublicSiteConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/site-config", { cache: "no-store" });
+      const res = await fetch("/api/site-config", {
+        cache: "no-store",
+        credentials: "include",
+      });
       if (res.ok) {
         const data = (await res.json()) as { config?: SiteConfig };
         if (data.config) setSiteConfig(data.config);
@@ -94,7 +125,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const headers: HeadersInit = currentToken
         ? { Authorization: `Bearer ${currentToken}` }
         : {};
-      const res = await fetch("/api/auth/status", { headers, cache: "no-store" });
+      const res = await fetch("/api/auth/status", {
+        headers,
+        cache: "no-store",
+        credentials: "include",
+      });
       if (res.ok) {
         const data = (await res.json()) as {
           authenticated?: boolean;
@@ -102,7 +137,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         };
         if (data.authenticated && data.user) {
           setUser(data.user);
-        } else if (currentToken) {
+        } else {
           setUser(null);
           setToken(null);
         }
@@ -122,15 +157,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLoginIntentToken(null);
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+      });
+    } catch {
+      // Continue clearing client state even on transient network error
+    }
     setUser(null);
     setToken(null);
     setLoginIntentToken(null);
     setOrders([]);
-    setPendingTab(null);
-    setActiveTab("home");
-    void checkAuthStatus(null);
-  }, [checkAuthStatus]);
+    setPendingPath(null);
+    if (pathname && !pathname.startsWith("/portal/")) {
+      router.push("/");
+    }
+  }, [pathname, router]);
 
   const authFetch = useCallback(
     async (input: string, init: RequestInit = {}) => {
@@ -141,17 +186,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (init.body && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
       }
-      const res = await fetch(input, { ...init, headers, cache: "no-store" });
+      const res = await fetch(input, {
+        ...init,
+        headers,
+        credentials: "include",
+        cache: "no-store",
+      });
       if (res.status === 401) {
-        logout();
+        setUser(null);
+        setToken(null);
+        setOrders([]);
       }
       return res;
     },
-    [token, logout]
+    [token]
   );
 
   const refreshOrders = useCallback(async () => {
-    if (!token) return;
+    if (!user) return;
     try {
       const res = await authFetch("/api/orders");
       if (res.ok) {
@@ -161,10 +213,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch {
       // Keep existing orders
     }
-  }, [token, authFetch]);
+  }, [user, authFetch]);
 
   useEffect(() => {
-    if (!token || !user) return;
+    if (!user) return;
     let cancelled = false;
     const loadAuthedData = async () => {
       setLoadingData(true);
@@ -175,31 +227,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [token, user, loadPublicSiteConfig, refreshOrders]);
+  }, [user, loadPublicSiteConfig, refreshOrders]);
 
   const setSession = useCallback(
-    (nextUser: PublicUser, nextToken: string) => {
+    (nextUser: PublicUser, nextToken: string): string => {
       setUser(nextUser);
       setToken(nextToken);
       setLoginIntentToken(null);
-      if (pendingTab) {
-        setActiveTab(pendingTab);
-        setPendingTab(null);
-      } else {
-        setActiveTab("home");
-      }
+      const dest = pendingPath || "/";
+      setPendingPath(null);
+      return dest;
     },
-    [pendingTab]
+    [pendingPath]
   );
 
   const openGatedLogin = useCallback(
     async (afterLoginTab?: AppTab) => {
-      if (afterLoginTab) {
-        setPendingTab(afterLoginTab);
-      }
+      const nextDestination = afterLoginTab
+        ? TAB_PATHS[afterLoginTab]
+        : pathname && pathname !== "/login"
+        ? pathname
+        : "/";
+      setPendingPath(nextDestination);
       try {
         const res = await fetch("/api/auth/login-intent", {
           method: "POST",
+          credentials: "include",
           cache: "no-store",
         });
         if (!res.ok) return;
@@ -212,7 +265,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // Stay safely on current page if intent cannot be issued
       }
     },
-    [router]
+    [pathname, router]
   );
 
   const requireLoginOrRun = useCallback(

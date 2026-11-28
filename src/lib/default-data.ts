@@ -30,12 +30,31 @@ export const DEFAULT_SITE_CONFIG: SiteConfig = {
   },
   services: [
     {
-      id: "architecture",
+      id: "2d-layout-plan",
       number: "01 /",
+      title: "2D Layout Plan",
+      description:
+        "Precision furniture & Vastu-aligned 2D floor plans tailored to your exact plot dimensions, north orientation, and room requirements.",
+      timeline: "2–4 days delivery",
+      priceInr: 2999,
+      requiresPlotDetails: true,
+      deliverables: [
+        "Detailed 2D floor plan PDF with room dimensions",
+        "North orientation, ventilation & circulation zoning",
+        "Furniture layout & 1 free design revision",
+      ],
+      icon: "ruler",
+      enabled: true,
+    },
+    {
+      id: "architecture",
+      number: "02 /",
       title: "Architecture",
       description:
         "Distinctive residential and commercial spaces grounded in context and everyday use.",
-      timeline: "6–14 weeks design phase",
+      timeline: "2–4 weeks design phase",
+      priceInr: 9999,
+      requiresPlotDetails: true,
       deliverables: [
         "Site analysis, massing & schematic concepts",
         "Architectural working drawings & elevations",
@@ -46,11 +65,13 @@ export const DEFAULT_SITE_CONFIG: SiteConfig = {
     },
     {
       id: "interior-design",
-      number: "02 /",
+      number: "03 /",
       title: "Interior Design",
       description:
         "Considered interiors that bring material, light, and human experience together.",
-      timeline: "4–10 weeks design phase",
+      timeline: "1–3 weeks design phase",
+      priceInr: 7999,
+      requiresPlotDetails: true,
       deliverables: [
         "Spatial zoning, circulation & lighting mood",
         "Bespoke joinery, finishes & material palettes",
@@ -60,31 +81,18 @@ export const DEFAULT_SITE_CONFIG: SiteConfig = {
       enabled: true,
     },
     {
-      id: "planning-design",
-      number: "03 /",
-      title: "Planning & Design",
-      description:
-        "Practical space planning and design development for a confident project journey.",
-      timeline: "3–6 weeks planning phase",
-      deliverables: [
-        "Functional floor layouts & feasibility studies",
-        "Regulatory alignment & build phasing",
-        "Technical detailing for seamless execution",
-      ],
-      icon: "ruler",
-      enabled: true,
-    },
-    {
       id: "3d-visualization",
       number: "04 /",
       title: "3D Visualization",
       description:
-        "Immersive visual studies that make ideas easier to see, discuss, and refine.",
-      timeline: "1–3 weeks visualization sprint",
+        "Immersive visual studies that make ideas easier to see, discuss, and refine before construction.",
+      timeline: "4–7 days visualization sprint",
+      priceInr: 5999,
+      requiresPlotDetails: true,
       deliverables: [
-        "Photorealistic exterior & interior renders",
+        "Photorealistic exterior & interior 3D renders",
         "Daylight, shadow & material comparisons",
-        "Client walkthrough frames before construction",
+        "High-resolution PDF presentation sheets",
       ],
       icon: "box",
       enabled: true,
@@ -136,6 +144,25 @@ export const DEFAULT_SITE_CONFIG: SiteConfig = {
     subtitle: "Tell us what you have in mind and start the conversation.",
     ctaLabel: "Enquire by email",
   },
+  billing: {
+    receiptStyle: "architectural",
+    studioAddress: "Akvai Associates Studio, Architecture & Interior Practice, India",
+    gstOrRegNo: "COA / Studio Reg. Pending Update",
+    signatoryName: "Principal Architect, Akvai Associates",
+    footerNote:
+      "Thank you for commissioning Akvai Associates. Final architectural PDFs are delivered inside your Orders portal upon completion.",
+  },
+  payment: {
+    currency: "INR",
+    upiEnabled: true,
+    upiId: "akvaiassociates@upi",
+    upiMerchantName: "Akvai Associates",
+    razorpayEnabled: false,
+    razorpayKeyId: "",
+    bankEnabled: false,
+    bankDetails: "",
+    payLaterEnabled: true,
+  },
 };
 
 export function sanitizeImageUrl(url?: string): string | undefined {
@@ -154,4 +181,79 @@ export function sanitizeImageUrl(url?: string): string | undefined {
     return undefined;
   }
   return undefined;
+}
+
+export function sanitizeImageDataUrl(
+  raw: unknown,
+  maxBytes = 2_500_000,
+  pngOnly = false
+): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+
+  const pattern = pngOnly
+    ? /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/
+    : /^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/;
+
+  const match = pattern.exec(trimmed);
+  if (!match) return undefined;
+
+  const base64Body = pngOnly ? match[1] : match[2];
+  if (!base64Body) return undefined;
+
+  const estimatedBytes = Math.floor((base64Body.length * 3) / 4);
+  if (estimatedBytes > maxBytes) return undefined;
+
+  // Validate magic bytes so spoofed HTML/SVG payloads are rejected
+  try {
+    const head = Buffer.from(base64Body.slice(0, 32), "base64");
+    const isPng =
+      head.length >= 8 &&
+      head[0] === 0x89 &&
+      head[1] === 0x50 &&
+      head[2] === 0x4e &&
+      head[3] === 0x47;
+    const isJpeg =
+      head.length >= 3 &&
+      head[0] === 0xff &&
+      head[1] === 0xd8 &&
+      head[2] === 0xff;
+    const isWebp =
+      head.length >= 12 &&
+      head.subarray(0, 4).toString("ascii") === "RIFF" &&
+      head.subarray(8, 12).toString("ascii") === "WEBP";
+
+    if (pngOnly) {
+      return isPng ? trimmed : undefined;
+    }
+    if (!isPng && !isJpeg && !isWebp) {
+      return undefined;
+    }
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
+export function sanitizePdfDataUrl(
+  raw: unknown,
+  maxBytes = 4_500_000
+): { dataUrl: string; sizeBytes: number } | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  const match = /^data:application\/pdf;base64,([A-Za-z0-9+/=]+)$/.exec(trimmed);
+  if (!match || !match[1]) return undefined;
+
+  const base64Body = match[1];
+  const sizeBytes = Math.floor((base64Body.length * 3) / 4);
+  if (sizeBytes <= 0 || sizeBytes > maxBytes) return undefined;
+
+  try {
+    const head = Buffer.from(base64Body.slice(0, 16), "base64").toString("ascii");
+    if (!head.startsWith("%PDF-")) return undefined;
+    return { dataUrl: trimmed, sizeBytes };
+  } catch {
+    return undefined;
+  }
 }

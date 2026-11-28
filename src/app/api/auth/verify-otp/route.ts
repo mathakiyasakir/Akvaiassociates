@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { signSessionToken } from "@/lib/auth";
+import { attachSessionCookie, signSessionToken } from "@/lib/auth";
 import {
   checkRateLimit,
   getClientIp,
@@ -95,5 +95,9 @@ export async function POST(request: NextRequest) {
   });
 
   const token = signSessionToken(user);
-  return secureJson({ user, token }, { status: 201 });
+  return attachSessionCookie(
+    secureJson({ user, token }, { status: 201 }),
+    token,
+    request
+  );
 }

@@ -14,8 +14,23 @@ export type OrderStatus =
   | "Pending"
   | "In Review"
   | "In Progress"
+  | "Revision Requested"
   | "Completed"
   | "Cancelled";
+
+export type PaymentMethod =
+  | "UPI"
+  | "Razorpay"
+  | "Bank Transfer"
+  | "Pay on Confirmation"
+  | "Demo Test";
+
+export type PaymentStatus = "Paid" | "Verification Pending" | "Unpaid";
+
+export type ReceiptStyleMode =
+  | "architectural"
+  | "minimal"
+  | "custom-template";
 
 export interface ServiceItem {
   id: string;
@@ -23,6 +38,8 @@ export interface ServiceItem {
   title: string;
   description: string;
   timeline: string;
+  priceInr: number;
+  requiresPlotDetails: boolean;
   deliverables: string[];
   icon: ServiceIconKey;
   enabled: boolean;
@@ -39,6 +56,28 @@ export interface ShowcaseItem {
   focusAreas: string;
 }
 
+export interface BillingConfig {
+  receiptStyle: ReceiptStyleMode;
+  templateImageDataUrl?: string;
+  studioAddress: string;
+  gstOrRegNo: string;
+  signatoryName: string;
+  footerNote: string;
+}
+
+export interface PublicPaymentConfig {
+  currency: "INR";
+  upiEnabled: boolean;
+  upiId: string;
+  upiMerchantName: string;
+  upiQrDataUrl?: string;
+  razorpayEnabled: boolean;
+  razorpayKeyId: string;
+  bankEnabled: boolean;
+  bankDetails: string;
+  payLaterEnabled: boolean;
+}
+
 export interface SiteConfig {
   brand: {
     name: string;
@@ -46,6 +85,7 @@ export interface SiteConfig {
     contactEmail: string;
     emailNotice: string;
     copyright: string;
+    logoDataUrl?: string;
   };
   hero: {
     kickerLeft: string;
@@ -86,6 +126,8 @@ export interface SiteConfig {
     subtitle: string;
     ctaLabel: string;
   };
+  billing: BillingConfig;
+  payment: PublicPaymentConfig;
 }
 
 export interface PublicUser {
@@ -94,6 +136,7 @@ export interface PublicUser {
   email: string;
   role: UserRole;
   emailVerified?: boolean;
+  isDemoTester?: boolean;
   createdAt: string;
 }
 
@@ -101,16 +144,64 @@ export interface StoredUser extends PublicUser {
   passwordHash: string;
 }
 
+export interface PlotDetails {
+  length: string;
+  width: string;
+  unit: "ft" | "m";
+  areaSq: string;
+  northSide: string;
+  floors: string;
+  sketchImageDataUrl?: string;
+  sketchFileName?: string;
+}
+
+export interface OrderPaymentInfo {
+  amountInr: number;
+  method: PaymentMethod;
+  status: PaymentStatus;
+  referenceId: string;
+  paidAt: string;
+}
+
+export interface OrderDeliverablePdf {
+  id: string;
+  fileName: string;
+  fileSizeBytes: number;
+  pdfDataUrl: string;
+  uploadedAt: string;
+  note?: string;
+}
+
+export interface OrderReview {
+  rating: number;
+  comment: string;
+  createdAt: string;
+}
+
+export interface OrderRevisionRequest {
+  id: string;
+  note: string;
+  createdAt: string;
+  resolved?: boolean;
+}
+
 export interface OrderItem {
   id: string;
+  invoiceNumber: string;
   userId: string;
   userName: string;
   userEmail: string;
+  serviceId?: string;
   serviceTitle: string;
   projectType: string;
   location: string;
   budgetRange: string;
   message: string;
+  plotDetails?: PlotDetails;
+  payment: OrderPaymentInfo;
+  deliverables: OrderDeliverablePdf[];
+  review?: OrderReview;
+  revisions: OrderRevisionRequest[];
   status: OrderStatus;
   adminNote: string;
   createdAt: string;
@@ -147,4 +238,10 @@ export interface SmtpStatus {
   fromAddress: string | null;
   verifiedAt: string | null;
   lastError: string | null;
+}
+
+export interface PaymentGatewayAdminStatus {
+  razorpaySecretConfigured: boolean;
+  razorpaySource: "env" | "runtime" | "none";
+  maskedRazorpayKeyId: string | null;
 }

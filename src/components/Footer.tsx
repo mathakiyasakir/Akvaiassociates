@@ -7,12 +7,10 @@ export function Footer() {
   const { brand } = siteConfig;
 
   const jumpTo = (href: string) => {
-    requireLoginOrRun(() => {
-      setActiveTab("home");
-      window.setTimeout(() => {
-        document.querySelector(href)?.scrollIntoView({ behavior: "smooth" });
-      }, 60);
-    });
+    setActiveTab("home");
+    window.setTimeout(() => {
+      document.querySelector(href)?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
   };
 
   return (
@@ -34,7 +32,7 @@ export function Footer() {
               <li>
                 <button
                   type="button"
-                  onClick={() => jumpTo("#services")}
+                  onClick={() => setActiveTab("service")}
                   className="text-[#B5B3AD] transition-colors hover:text-white"
                 >
                   Services

@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { hashPassword, signSessionToken } from "@/lib/auth";
+import { attachSessionCookie, hashPassword, signSessionToken } from "@/lib/auth";
 import {
   checkRateLimit,
   getClientIp,
@@ -127,13 +127,17 @@ export async function POST(request: NextRequest) {
   });
 
   const token = signSessionToken(user, activeSlug);
-  return secureJson(
-    {
-      user,
-      token,
-      portalSlug: activeSlug,
-      portalPath: `/portal/${activeSlug}`,
-    },
-    { status: 201 }
+  return attachSessionCookie(
+    secureJson(
+      {
+        user,
+        token,
+        portalSlug: activeSlug,
+        portalPath: `/portal/${activeSlug}`,
+      },
+      { status: 201 }
+    ),
+    token,
+    request
   );
 }

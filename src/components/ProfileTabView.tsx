@@ -77,7 +77,9 @@ export function ProfileTabView() {
 
               <motion.button
                 type="button"
-                onClick={logout}
+                onClick={() => {
+                  void logout();
+                }}
                 whileHover={prefersReducedMotion ? undefined : { y: -1 }}
                 whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
                 className="inline-flex min-h-11 items-center gap-2 rounded-[3px] border border-[#DFC7BF] bg-[#FDF5F2] px-4 py-2 text-sm font-medium text-[#9A3412] transition-colors hover:bg-[#FAE6DE]"

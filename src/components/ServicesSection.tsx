@@ -135,26 +135,30 @@ export function ServicesSection({
                 </div>
 
                 <div className="mt-6 flex items-center justify-between gap-4 border-t border-[#F0ECE4] pt-4">
-                  <span className="text-xs text-[#6B6963]">{service.timeline}</span>
-                  <motion.a
-                    href="#contact"
-                    onClick={(event) => {
-                      event.preventDefault();
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm font-semibold tabular-nums text-[#1C1B19]">
+                      {service.priceInr > 0
+                        ? `₹${service.priceInr.toLocaleString("en-IN")}`
+                        : "Custom Quote"}
+                    </span>
+                    <span className="text-xs text-[#6B6963]">
+                      · {service.timeline}
+                    </span>
+                  </div>
+                  <motion.button
+                    type="button"
+                    onClick={() => {
                       requireLoginOrRun(() => {
                         onSelectService(service.title);
-                        document
-                          .querySelector("#contact")
-                          ?.scrollIntoView({
-                            behavior: prefersReducedMotion ? "auto" : "smooth",
-                          });
-                      });
+                        onOpenServiceTab();
+                      }, "service");
                     }}
                     whileHover={prefersReducedMotion ? undefined : { x: 2 }}
                     className="inline-flex min-h-9 items-center gap-1.5 text-sm font-medium whitespace-nowrap text-[#0D5C43] transition-colors hover:text-[#08402E]"
                   >
-                    <span>Enquire now</span>
+                    <span>Book now</span>
                     <ArrowUpRight className="h-4 w-4 text-[#DF7324]" />
-                  </motion.a>
+                  </motion.button>
                 </div>
               </motion.article>
             );
